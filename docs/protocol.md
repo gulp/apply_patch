@@ -20,7 +20,7 @@ Exactly one begin and one end. No non-whitespace content outside the envelope. A
 +line two
 ```
 
-Every content line must start with `+`. The target path must not exist. Parent directories are created as needed and rolled back if the transaction fails.
+Every content line must start with `+`. The target path must not exist. Parent directories are created as needed and rolled back if the transaction fails. Content lines are joined with LF (`\n`).
 
 ## Update File
 
@@ -39,9 +39,28 @@ Hunks begin with `@@` or `@@ <anchor>`:
 - `@@ <anchor>` advances the search cursor to a unique exact line equal to `<anchor>`, then locates the hunk body.
 - Unified-diff numeric forms such as `@@ -1,3 +1,4 @@` are ignored as line-number math; the hunk body still matches exactly.
 
-Each hunk needs at least one `-` or `+` line. Context lines start with a single space. An optional trailing `*** End of File` marks EOF-prefer locate for that hunk. The target must be an existing regular UTF-8 text file.
+Each hunk needs at least one `-` or `+` line. Context lines start with a single space. The target must be an existing regular UTF-8 text file.
 
-Matching is unique and exact on the file’s logical lines (LF-normalized for comparison), except EOF-prefer which tries the end-aligned match first. The file’s LF or CRLF style is preserved on emit. Mixed line endings on update are rejected. Empty no-op hunks and no-effect updates fail.
+### End of File
+
+An optional trailing `*** End of File` marks EOF-prefer locate for that hunk:
+
+```text
+*** Update File: path/to/file
+@@
+ trailing context
+-old
++new
+*** End of File
+```
+
+Locate prefers an exact match aligned at the end of the file (`len - old_len`). If that fails, search continues with unique-exact matching from the current cursor. No whitespace or unicode fuzz.
+
+### Matching and newlines
+
+Matching is unique and exact on the file’s logical lines (line endings stripped for comparison). Apply locates all hunks on the original line array, then emits with a forward cursor. Controlled edge-context reduction applies only when the reduced needle is unique. Ambiguous or missing context fails (`HUNK_AMBIGUOUS` / `HUNK_NOT_FOUND`). Empty no-op hunks and no-effect updates fail (`PATCH_NO_EFFECT`).
+
+The file’s LF or CRLF style is preserved on emit. Mixed line endings on update are rejected. UTF-8 BOM is preserved when present.
 
 ## Delete File
 
@@ -63,7 +82,7 @@ The target must be an existing regular file. No content body. Empty files may be
 
 ## Unsupported in v1
 
-- `*** Move File` / `*** Move to:`
+- `*** Move File` / `*** Move to:` (see [design/move.md](./design/move.md))
 - Binary files
 - Whitespace-fuzzy or first-match-wins matching
 - Executable-bit control on Add

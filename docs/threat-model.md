@@ -20,7 +20,7 @@ Assumes patch input may be malformed or adversarial.
 3. Reject non-regular targets for update/delete; refuse symlink targets.
 4. Exclusive same-directory temp files with unpredictable names; atomic rename.
 5. Enforce patch, file, and hunk limits before heavy work.
-6. Unique exact matching only (no fuzzy default, no first-match-wins).
+6. Unique exact matching only (no fuzzy default, no first-match-wins); `*** End of File` still exact (EOF-prefer, then unique forward).
 7. Fingerprint revalidation immediately before visible mutation.
 8. No shell-out from the apply runtime; no interpreting file content as commands.
 9. Keep diagnostics content-bounded; default logs omit source bodies.

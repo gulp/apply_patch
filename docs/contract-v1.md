@@ -4,9 +4,13 @@ Frozen decisions for parallel implementation. Changing any field requires an exp
 
 ## Operations
 
-Supported: `Add File`, `Update File`, `Delete File`.
+Supported:
 
-Deferred to v1.1: `Move File`.
+- `Add File`
+- `Update File` (including `@@` / `@@ <anchor>` hunks and optional `*** End of File`)
+- `Delete File`
+
+Deferred to v1.1: `Move File` / `*** Move to:` (see [design/move.md](./design/move.md)).
 
 ## Matching
 
