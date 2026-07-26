@@ -1,9 +1,10 @@
-//! In-memory patch application.
+//! In-memory patch application (locate-all → forward emit).
 
 use super::diff_summary::{diff_line_counts, DiffCounts};
-use super::matcher::{apply_at, find_unique_match, MatchRange};
+use super::emit::emit_chunks;
+use super::locate::locate_chunks;
 use crate::error::{ErrorCode, PublicError};
-use crate::protocol::ast::{Hunk, UpdateFile};
+use crate::protocol::ast::UpdateFile;
 
 #[derive(Debug, Clone)]
 pub struct AppliedText {
@@ -20,37 +21,12 @@ pub fn apply_update(
     newline: &str,
     final_newline: bool,
 ) -> Result<AppliedText, PublicError> {
-    let mut lines: Vec<String> = split_content_lines(base);
-    let mut occupied: Vec<(usize, usize)> = Vec::new(); // ranges in original line space — track via sequential apply
+    let lines = split_content_lines(base);
+    let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+    let chunks = locate_chunks(&line_refs, update)?;
+    let new_lines = emit_chunks(&line_refs, &chunks, &update.path)?;
 
-    for (hunk_index, hunk) in update.hunks.iter().enumerate() {
-        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        let range = find_unique_match(&line_refs, hunk, hunk_index, &update.path)?;
-        check_overlap(&occupied, range, hunk, hunk_index, &update.path)?;
-        // Record occupied in current line coordinates before mutation; after apply,
-        // subsequent matches search the updated buffer so overlaps are on current coords.
-        let new_lines = apply_at(&line_refs, range, hunk)?;
-        let new_len = hunk.new_text_lines().len();
-        // Update occupied ranges for subsequent overlap checks in the new coordinate space.
-        // Simpler approach: map occupied ranges through the edit.
-        let mut next_occupied = Vec::new();
-        for (s, e) in occupied {
-            if e <= range.start_line {
-                next_occupied.push((s, e));
-            } else if s >= range.end_line {
-                let delta =
-                    new_len as isize - (range.end_line as isize - range.start_line as isize);
-                next_occupied.push(((s as isize + delta) as usize, (e as isize + delta) as usize));
-            } else {
-                return Err(overlap_err(hunk, hunk_index, &update.path));
-            }
-        }
-        next_occupied.push((range.start_line, range.start_line + new_len));
-        occupied = next_occupied;
-        lines = new_lines;
-    }
-
-    let text = join_lines(&lines, newline, final_newline);
+    let text = join_lines(&new_lines, newline, final_newline);
     if text == base {
         return Err(PublicError::new(
             ErrorCode::PatchNoEffect,
@@ -64,34 +40,6 @@ pub fn apply_update(
         counts,
         hunks_applied: update.hunks.len(),
     })
-}
-
-fn overlap_err(hunk: &Hunk, hunk_index: usize, path: &str) -> PublicError {
-    PublicError::new(
-        ErrorCode::HunkOverlap,
-        format!(
-            "Update hunk {} overlaps a previously applied hunk.",
-            hunk_index + 1
-        ),
-    )
-    .with_path(path)
-    .with_hunk(hunk_index)
-    .with_source(hunk.source_span)
-}
-
-fn check_overlap(
-    occupied: &[(usize, usize)],
-    range: MatchRange,
-    hunk: &Hunk,
-    hunk_index: usize,
-    path: &str,
-) -> Result<(), PublicError> {
-    for &(s, e) in occupied {
-        if range.start_line < e && s < range.end_line {
-            return Err(overlap_err(hunk, hunk_index, path));
-        }
-    }
-    Ok(())
 }
 
 /// Split file content into lines without endings. Preserves whether final newline existed separately.
@@ -132,13 +80,7 @@ pub fn split_content_lines(text: &str) -> Vec<String> {
 
 pub fn join_lines(lines: &[String], newline: &str, final_newline: bool) -> String {
     if lines.is_empty() {
-        return if final_newline {
-            // empty file with final newline is just empty string conventionally;
-            // an empty file never has content. final_newline on empty → ""
-            String::new()
-        } else {
-            String::new()
-        };
+        return String::new();
     }
     let mut out = lines.join(newline);
     if final_newline {
@@ -177,22 +119,144 @@ mod tests {
     use crate::error::SourceSpan;
     use crate::protocol::ast::{Hunk, HunkLine, UpdateFile};
 
+    fn update(hunks: Vec<Hunk>) -> UpdateFile {
+        UpdateFile {
+            path: "f".into(),
+            source_span: SourceSpan { line: 1, column: 1 },
+            hunks,
+        }
+    }
+
+    fn hunk(anchor: Option<&str>, lines: Vec<HunkLine>) -> Hunk {
+        Hunk {
+            lines,
+            source_span: SourceSpan { line: 2, column: 1 },
+            anchor: anchor.map(str::to_string),
+        }
+    }
+
     #[test]
     fn applies_simple_replace() {
         let base = "a\nb\nc\n";
-        let update = UpdateFile {
-            path: "f".into(),
-            source_span: SourceSpan { line: 1, column: 1 },
-            hunks: vec![Hunk {
-                source_span: SourceSpan { line: 2, column: 1 },
-                lines: vec![
+        let applied = apply_update(
+            base,
+            &update(vec![hunk(
+                None,
+                vec![
                     HunkLine::Context("b".into()),
                     HunkLine::Delete("c".into()),
                     HunkLine::Add("d".into()),
                 ],
-            }],
-        };
-        let applied = apply_update(base, &update, "\n", true).unwrap();
+            )]),
+            "\n",
+            true,
+        )
+        .unwrap();
         assert_eq!(applied.text, "a\nb\nd\n");
+    }
+
+    #[test]
+    fn crlf_file_lf_patch_preserves_crlf() {
+        let base = "line1\r\nline2\r\nline3\r\n";
+        let applied = apply_update(
+            base,
+            &update(vec![hunk(
+                Some("line1"),
+                vec![
+                    HunkLine::Delete("line2".into()),
+                    HunkLine::Add("updated".into()),
+                    HunkLine::Context("line3".into()),
+                ],
+            )]),
+            "\r\n",
+            true,
+        )
+        .unwrap();
+        assert_eq!(applied.text, "line1\r\nupdated\r\nline3\r\n");
+    }
+
+    #[test]
+    fn lf_file_crlf_patch_preserves_lf() {
+        let base = "line1\nline2\nline3\n";
+        let applied = apply_update(
+            base,
+            &update(vec![hunk(
+                Some("line1"),
+                vec![
+                    HunkLine::Delete("line2".into()),
+                    HunkLine::Add("updated".into()),
+                    HunkLine::Context("line3".into()),
+                ],
+            )]),
+            "\n",
+            true,
+        )
+        .unwrap();
+        assert_eq!(applied.text, "line1\nupdated\nline3\n");
+    }
+
+    #[test]
+    fn crlf_file_crlf_patch_preserves_crlf() {
+        let base = "line1\r\nline2\r\nline3\r\n";
+        let applied = apply_update(
+            base,
+            &update(vec![hunk(
+                None,
+                vec![
+                    HunkLine::Context("line1".into()),
+                    HunkLine::Delete("line2".into()),
+                    HunkLine::Add("updated".into()),
+                    HunkLine::Context("line3".into()),
+                ],
+            )]),
+            "\r\n",
+            true,
+        )
+        .unwrap();
+        assert_eq!(applied.text, "line1\r\nupdated\r\nline3\r\n");
+    }
+
+    #[test]
+    fn multi_hunk_locate_then_emit_on_original() {
+        let base = "a\nb\nc\nd\n";
+        let applied = apply_update(
+            base,
+            &update(vec![
+                hunk(
+                    None,
+                    vec![
+                        HunkLine::Delete("b".into()),
+                        HunkLine::Add("B".into()),
+                    ],
+                ),
+                hunk(
+                    None,
+                    vec![
+                        HunkLine::Delete("d".into()),
+                        HunkLine::Add("D".into()),
+                    ],
+                ),
+            ]),
+            "\n",
+            true,
+        )
+        .unwrap();
+        assert_eq!(applied.text, "a\nB\nc\nD\n");
+    }
+
+    #[test]
+    fn detect_crlf_and_lf() {
+        assert!(matches!(
+            detect_newline_style("a\r\nb\r\n"),
+            crate::error::NewlineStyle::CrLf
+        ));
+        assert!(matches!(
+            detect_newline_style("a\nb\n"),
+            crate::error::NewlineStyle::Lf
+        ));
+        assert!(matches!(
+            detect_newline_style("a\r\nb\nc"),
+            crate::error::NewlineStyle::Mixed
+        ));
     }
 }

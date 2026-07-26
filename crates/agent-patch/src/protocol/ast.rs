@@ -64,6 +64,8 @@ pub struct DeleteFile {
 pub struct Hunk {
     pub lines: Vec<HunkLine>,
     pub source_span: SourceSpan,
+    /// Exact line from `@@ <anchor>`; `None` for bare `@@` or unified-diff numeric headers.
+    pub anchor: Option<String>,
 }
 
 impl Hunk {

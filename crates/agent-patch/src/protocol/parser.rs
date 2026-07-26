@@ -236,12 +236,14 @@ fn parse_update_body(
                 line: lines[i].line_no,
                 column: 1,
             };
+            let anchor = parse_hunk_anchor(text);
             i += 1;
             let (hunk_lines, next) = parse_hunk_lines(lines, i)?;
             i = next;
             let hunk = Hunk {
                 lines: hunk_lines,
                 source_span: span,
+                anchor,
             };
             if !hunk.has_change() {
                 return Err(PublicError::new(
@@ -269,6 +271,22 @@ fn parse_update_body(
         ));
     }
     Ok((hunks, i))
+}
+
+/// Parse `@@` / `@@ <anchor>` / unified-diff `@@ -l,s +l,s @@` (numeric → no anchor).
+fn parse_hunk_anchor(header: &str) -> Option<String> {
+    let rest = header.strip_prefix("@@")?.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    // Unified-diff numeric hunk header: starts with -<digits>
+    let bytes = rest.as_bytes();
+    if bytes.first() == Some(&b'-')
+        && bytes.get(1).map(|b| b.is_ascii_digit()).unwrap_or(false)
+    {
+        return None;
+    }
+    Some(rest.to_string())
 }
 
 fn parse_hunk_lines(
@@ -362,6 +380,19 @@ mod tests {
             err.code,
             ErrorCode::PatchMissingBegin | ErrorCode::PatchTrailingContent
         ));
+    }
+
+    #[test]
+    fn parses_anchor_and_ignores_numeric_hunk_header() {
+        let patch = "*** Begin Patch\n*** Update File: a.rs\n@@ section\n-old\n+new\n@@ -1,2 +1,2 @@\n-x\n+y\n*** End Patch\n";
+        let doc = parse_patch(patch).unwrap();
+        match &doc.operations[0] {
+            FileOperation::Update(u) => {
+                assert_eq!(u.hunks[0].anchor.as_deref(), Some("section"));
+                assert_eq!(u.hunks[1].anchor, None);
+            }
+            _ => panic!("expected update"),
+        }
     }
 
     #[test]

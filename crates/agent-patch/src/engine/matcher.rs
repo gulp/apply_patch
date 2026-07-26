@@ -1,37 +1,40 @@
-//! Deterministic hunk matching.
+//! Deterministic unique-exact hunk matching (with optional context reduction).
 
-use crate::error::{ErrorCode, PublicError, SourceSpan};
-use crate::protocol::ast::Hunk;
+use crate::error::{ErrorCode, PublicError};
+use crate::protocol::ast::{Hunk, HunkLine};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MatchRange {
-    pub start_line: usize, // 0-based index into file lines
-    pub end_line: usize,   // exclusive
+/// Inclusive-exclusive range plus the insertion lines to emit for that hit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchHit {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub ins_lines: Vec<String>,
 }
 
-/// Find a unique match for the hunk's old side against file lines (without newline endings).
+/// Find a unique match for the hunk's old side in `file_lines[search_start..]`.
+///
+/// When context reduction is used, `ins_lines` are reduced by the same leading/trailing
+/// context strips so emit replaces exactly the matched span.
 pub fn find_unique_match(
     file_lines: &[&str],
     hunk: &Hunk,
     hunk_index: usize,
     path: &str,
-) -> Result<MatchRange, PublicError> {
+    search_start: usize,
+) -> Result<MatchHit, PublicError> {
     let old = hunk.old_text_lines();
+    let full_ins: Vec<String> = hunk
+        .new_text_lines()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
     if old.is_empty() {
-        // Pure insertion: match using surrounding context from new_text...
-        // Pure insert hunks have only '+' lines — old is empty.
-        // Match position: try to use context lines that appear as Context in the hunk.
-        // With only Add lines, insertion location is ambiguous unless we treat as
-        // append-only or require context. Spec: insertion with zero old lines —
-        // use leading/trailing context from hunk.lines Context entries... but those
-        // are in old_text_lines. So pure-add with no context is only valid at EOF
-        // if we define it that way. Require at least context OR treat empty old as
-        // "insert at every position" which is always ambiguous for non-empty files.
-        // Contract: pure addition with no context → match only empty file (start).
-        if file_lines.is_empty() {
-            return Ok(MatchRange {
+        if file_lines.is_empty() && search_start == 0 {
+            return Ok(MatchHit {
                 start_line: 0,
                 end_line: 0,
+                ins_lines: full_ins,
             });
         }
         return Err(PublicError::new(
@@ -46,22 +49,24 @@ pub fn find_unique_match(
         .with_source(hunk.source_span));
     }
 
-    // 1. Exact full match
-    let matches = find_all_matches(file_lines, &old);
+    let matches = find_all_matches(file_lines, &old, search_start);
     if matches.len() == 1 {
-        return Ok(matches[0]);
+        let (start, end) = matches[0];
+        return Ok(MatchHit {
+            start_line: start,
+            end_line: end,
+            ins_lines: full_ins,
+        });
     }
     if matches.len() > 1 {
-        // Try context reduction
-        if let Some(m) = try_context_reduction(file_lines, hunk, &old) {
-            return Ok(m);
+        if let Some(hit) = try_context_reduction(file_lines, hunk, search_start) {
+            return Ok(hit);
         }
         return Err(ambiguous(hunk, hunk_index, path));
     }
 
-    // 2/3. Context reduction when zero matches
-    if let Some(m) = try_context_reduction(file_lines, hunk, &old) {
-        return Ok(m);
+    if let Some(hit) = try_context_reduction(file_lines, hunk, search_start) {
+        return Ok(hit);
     }
 
     Err(PublicError::new(
@@ -91,177 +96,190 @@ fn ambiguous(hunk: &Hunk, hunk_index: usize, path: &str) -> PublicError {
     .with_hint("Add more unique surrounding context and regenerate the patch.")
 }
 
-fn find_all_matches(file_lines: &[&str], needle: &[&str]) -> Vec<MatchRange> {
+fn find_all_matches(file_lines: &[&str], needle: &[&str], search_start: usize) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     if needle.is_empty() {
         return out;
     }
-    if file_lines.len() < needle.len() {
+    if search_start >= file_lines.len() {
+        return out;
+    }
+    if file_lines.len() < search_start + needle.len() {
         return out;
     }
     let last = file_lines.len() - needle.len();
-    for start in 0..=last {
+    for start in search_start..=last {
         if file_lines[start..start + needle.len()] == *needle {
-            out.push(MatchRange {
-                start_line: start,
-                end_line: start + needle.len(),
-            });
+            out.push((start, start + needle.len()));
         }
     }
     out
 }
 
-/// Strip leading then trailing context lines until unique match or minimum reached.
+/// Strip leading then trailing context until a unique match, or give up.
 fn try_context_reduction(
     file_lines: &[&str],
     hunk: &Hunk,
-    _old_full: &[&str],
-) -> Option<MatchRange> {
-    // Build old lines with classification
-    let mut classified: Vec<(bool, &str)> = Vec::new(); // (is_context, text)
-    for line in &hunk.lines {
-        match line {
-            crate::protocol::ast::HunkLine::Context(s) => classified.push((true, s.as_str())),
-            crate::protocol::ast::HunkLine::Delete(s) => classified.push((false, s.as_str())),
-            crate::protocol::ast::HunkLine::Add(_) => {}
-        }
-    }
-
-    let mut lead_strip = 0usize;
-    let mut trail_strip = 0usize;
-    let ctx_count = classified.iter().filter(|(c, _)| *c).count();
-    let change_count = classified.iter().filter(|(c, _)| !*c).count();
+    search_start: usize,
+) -> Option<MatchHit> {
+    let old_entries = old_side_entries(hunk);
+    let change_count = old_entries.iter().filter(|(_, is_ctx, _)| !*is_ctx).count();
     if change_count == 0 {
         return None;
     }
 
-    // Iterate strip leading, then trailing, alternating until no more context
-    let max_iters = ctx_count + 1;
-    for _ in 0..max_iters {
-        let needle = build_reduced(&classified, lead_strip, trail_strip)?;
-        // Minimum: at least one old line remaining
-        if needle.is_empty() {
-            return None;
-        }
-        let matches = find_all_matches(file_lines, &needle);
-        if matches.len() == 1 {
-            return Some(matches[0]);
-        }
-        if matches.len() > 1 {
-            // Need more reduction
+    let ctx_count = old_entries.iter().filter(|(_, is_ctx, _)| *is_ctx).count();
+    let mut lead = 0usize;
+    let mut trail = 0usize;
+    let mut prefer_lead = true;
+
+    // Contract: strip one leading context, then one trailing, alternating; accept only if unique.
+    for _ in 0..ctx_count {
+        let can_lead = can_strip_leading(&old_entries, lead, trail);
+        let can_trail = can_strip_trailing(&old_entries, lead, trail);
+        if prefer_lead && can_lead {
+            lead += 1;
+            prefer_lead = false;
+        } else if can_trail {
+            trail += 1;
+            prefer_lead = true;
+        } else if can_lead {
+            lead += 1;
+            prefer_lead = false;
         } else {
-            // zero — keep reducing
+            break;
         }
-
-        // Prefer strip one leading context, else trailing
-        let can_lead = lead_strip < classified.len()
-            && classified.get(lead_strip).map(|(c, _)| *c).unwrap_or(false);
-        // After lead_strip, first remaining should be context to strip
-        let first_ctx_idx = classified
-            .iter()
-            .enumerate()
-            .skip(lead_strip)
-            .find_map(|(i, (c, _))| if *c { Some(i) } else { None });
-        let last_ctx_idx = classified
-            .iter()
-            .enumerate()
-            .rev()
-            .skip(trail_strip)
-            .find_map(|(i, (c, _))| {
-                if *c && i + 1 + trail_strip <= classified.len() {
-                    Some(i)
-                } else {
-                    None
-                }
-            });
-
-        if let Some(idx) = first_ctx_idx {
-            if idx == lead_strip || classified[lead_strip].0 {
-                // strip next leading context by increasing lead_strip to idx+1 if context at start
-                if can_lead || first_ctx_idx == Some(lead_strip) {
-                    lead_strip = idx + 1;
-                    continue;
-                }
-            }
+        if let Some(hit) =
+            match_reduced(file_lines, hunk, &old_entries, lead, trail, search_start)
+        {
+            return Some(hit);
         }
-        if let Some(idx) = last_ctx_idx {
-            let from_end = classified.len() - 1 - idx;
-            if from_end >= trail_strip {
-                trail_strip = from_end + 1;
-                continue;
-            }
-        }
-        break;
     }
     None
 }
 
-fn build_reduced<'a>(
-    classified: &[(bool, &'a str)],
-    lead_strip: usize,
-    trail_strip: usize,
-) -> Option<Vec<&'a str>> {
-    if lead_strip + trail_strip >= classified.len() {
+fn match_reduced(
+    file_lines: &[&str],
+    hunk: &Hunk,
+    old_entries: &[(usize, bool, &str)],
+    lead: usize,
+    trail: usize,
+    search_start: usize,
+) -> Option<MatchHit> {
+    if lead == 0 && trail == 0 {
         return None;
     }
-    let slice = &classified[lead_strip..classified.len() - trail_strip];
-    // Must retain all non-context (delete) lines
-    if !classified.iter().filter(|(c, _)| !*c).all(|(c, text)| {
-        !*c && slice.iter().any(|(sc, st)| !sc && st == text)
-            || slice.iter().any(|x| x == &(*c, *text))
-    }) {
-        // Simpler: ensure all delete lines are still in slice
+    let slice = strip_old_edges(old_entries, lead, trail)?;
+    let needle: Vec<&str> = slice.iter().map(|(_, _, t)| *t).collect();
+    if needle.is_empty() {
+        return None;
     }
-    let deletes_ok = classified
+    let matches = find_all_matches(file_lines, &needle, search_start);
+    if matches.len() != 1 {
+        return None;
+    }
+    let (start, end) = matches[0];
+    let ins_lines = reduce_new_side(hunk, lead, trail)?;
+    Some(MatchHit {
+        start_line: start,
+        end_line: end,
+        ins_lines,
+    })
+}
+
+fn old_side_entries(hunk: &Hunk) -> Vec<(usize, bool, &str)> {
+    hunk.lines
         .iter()
-        .filter(|(c, _)| !*c)
-        .all(|d| slice.iter().any(|s| s == d));
+        .enumerate()
+        .filter_map(|(i, line)| match line {
+            HunkLine::Context(s) => Some((i, true, s.as_str())),
+            HunkLine::Delete(s) => Some((i, false, s.as_str())),
+            HunkLine::Add(_) => None,
+        })
+        .collect()
+}
+
+fn strip_old_edges<'a>(
+    old_entries: &'a [(usize, bool, &'a str)],
+    lead: usize,
+    trail: usize,
+) -> Option<&'a [(usize, bool, &'a str)]> {
+    let mut lo = 0usize;
+    let mut hi = old_entries.len();
+    for _ in 0..lead {
+        if lo >= hi || !old_entries[lo].1 {
+            return None;
+        }
+        lo += 1;
+    }
+    for _ in 0..trail {
+        if lo >= hi || !old_entries[hi - 1].1 {
+            return None;
+        }
+        hi -= 1;
+    }
+    if lo >= hi {
+        return None;
+    }
+    let slice = &old_entries[lo..hi];
+    let deletes_ok = old_entries
+        .iter()
+        .filter(|(_, is_ctx, _)| !*is_ctx)
+        .all(|d| slice.iter().any(|s| s.0 == d.0));
     if !deletes_ok {
         return None;
     }
-    Some(slice.iter().map(|(_, t)| *t).collect())
+    Some(slice)
 }
 
-/// Apply a single hunk at a known range, returning new file lines.
-pub fn apply_at(
-    file_lines: &[&str],
-    range: MatchRange,
-    hunk: &Hunk,
-) -> Result<Vec<String>, PublicError> {
-    let new_side: Vec<String> = hunk
-        .new_text_lines()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    let mut out = Vec::with_capacity(file_lines.len() + new_side.len());
-    out.extend(
-        file_lines[..range.start_line]
-            .iter()
-            .map(|s| (*s).to_string()),
-    );
-    out.extend(new_side);
-    out.extend(
-        file_lines[range.end_line..]
-            .iter()
-            .map(|s| (*s).to_string()),
-    );
-    Ok(out)
+fn can_strip_leading(old_entries: &[(usize, bool, &str)], lead: usize, trail: usize) -> bool {
+    strip_old_edges(old_entries, lead + 1, trail).is_some()
 }
 
-#[allow(dead_code)]
-fn _span(hunk: &Hunk) -> SourceSpan {
-    hunk.source_span
+fn can_strip_trailing(old_entries: &[(usize, bool, &str)], lead: usize, trail: usize) -> bool {
+    strip_old_edges(old_entries, lead, trail + 1).is_some()
+}
+
+fn reduce_new_side(hunk: &Hunk, lead: usize, trail: usize) -> Option<Vec<String>> {
+    let mut entries: Vec<(bool, String)> = Vec::new();
+    for line in &hunk.lines {
+        match line {
+            HunkLine::Context(s) => entries.push((true, s.clone())),
+            HunkLine::Add(s) => entries.push((false, s.clone())),
+            HunkLine::Delete(_) => {}
+        }
+    }
+
+    let mut lo = 0usize;
+    let mut hi = entries.len();
+    for _ in 0..lead {
+        if lo >= hi || !entries[lo].0 {
+            return None;
+        }
+        lo += 1;
+    }
+    for _ in 0..trail {
+        if lo >= hi || !entries[hi - 1].0 {
+            return None;
+        }
+        hi -= 1;
+    }
+    if lo > hi {
+        return None;
+    }
+    Some(entries[lo..hi].iter().map(|(_, s)| s.clone()).collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ast::{Hunk, HunkLine};
+    use crate::error::SourceSpan;
 
     fn hunk(lines: Vec<HunkLine>) -> Hunk {
         Hunk {
             lines,
             source_span: SourceSpan { line: 1, column: 1 },
+            anchor: None,
         }
     }
 
@@ -273,9 +291,10 @@ mod tests {
             HunkLine::Delete("c".into()),
             HunkLine::Add("d".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f").unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 0).unwrap();
         assert_eq!(m.start_line, 1);
         assert_eq!(m.end_line, 3);
+        assert_eq!(m.ins_lines, vec!["b".to_string(), "d".to_string()]);
     }
 
     #[test]
@@ -285,7 +304,7 @@ mod tests {
             HunkLine::Delete("x".into()),
             HunkLine::Add("z".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f").unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 
@@ -296,7 +315,45 @@ mod tests {
             HunkLine::Delete("missing".into()),
             HunkLine::Add("x".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f").unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkNotFound);
+    }
+
+    #[test]
+    fn search_start_skips_earlier_match() {
+        let file = ["x", "a", "x", "b"];
+        let h = hunk(vec![
+            HunkLine::Delete("x".into()),
+            HunkLine::Add("X".into()),
+        ]);
+        let m = find_unique_match(&file, &h, 0, "f", 2).unwrap();
+        assert_eq!(m.start_line, 2);
+    }
+
+    #[test]
+    fn context_reduction_unique_core_adjusts_ins() {
+        // Full [shared, target] is absent; reduced [target] after stripping leading context is unique.
+        let file = ["pad", "target", "shared"];
+        let h = hunk(vec![
+            HunkLine::Context("shared".into()),
+            HunkLine::Delete("target".into()),
+            HunkLine::Add("done".into()),
+        ]);
+        let m = find_unique_match(&file, &h, 0, "f", 0).unwrap();
+        assert_eq!(m.start_line, 1);
+        assert_eq!(m.end_line, 2);
+        assert_eq!(m.ins_lines, vec!["done".to_string()]);
+    }
+
+    #[test]
+    fn context_reduction_still_ambiguous_fails() {
+        let file = ["ctx", "target", "ctx", "target"];
+        let h = hunk(vec![
+            HunkLine::Context("ctx".into()),
+            HunkLine::Delete("target".into()),
+            HunkLine::Add("done".into()),
+        ]);
+        let err = find_unique_match(&file, &h, 0, "f", 0).unwrap_err();
+        assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 }
