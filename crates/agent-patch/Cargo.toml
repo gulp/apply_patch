@@ -1,0 +1,33 @@
+[package]
+name = "agent-patch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Deterministic localized patch applicator for coding agents"
+readme = "../../README.md"
+
+[lib]
+name = "agent_patch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-patch"
+path = "src/main.rs"
+
+[dependencies]
+blake3 = { workspace = true }
+camino = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+similar = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+proptest = { workspace = true }
+insta = { workspace = true }
+tempfile = { workspace = true }

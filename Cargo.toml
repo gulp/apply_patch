@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/agent-patch"]
+default-members = ["crates/agent-patch"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+blake3 = "1.5"
+camino = "1.1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+similar = "2.6"
+tempfile = "3.14"
+thiserror = "2.0"
+proptest = "1.5"
+assert_cmd = "2.0"
+predicates = "3.1"
+insta = { version = "1.41", features = ["json"] }
