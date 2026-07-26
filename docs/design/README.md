@@ -7,6 +7,7 @@
 | [overview.md](./overview.md) | Pipeline, ground-truth map, non-goals |
 | [apply-engine.md](./apply-engine.md) | Locate → emit; matching and newlines |
 | [transaction.md](./transaction.md) | Snapshot, commit, rollback |
+| [move.md](./move.md) | Deferred Move File commit-order rules |
 | [seams.md](./seams.md) | Module boundaries and tests |
 | [stack.txt](./stack.txt) | Crates in / out of the apply path |
 
