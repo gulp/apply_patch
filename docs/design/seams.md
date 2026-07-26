@@ -12,10 +12,10 @@ agents/CI → CLI → app::run
 
 | Seam | Depth | Tests |
 | --- | --- | --- |
-| `parse_patch` | Grammar + spans | Malformed corpus; no tempdir |
-| `apply_update` | Locate + emit + newlines | String fixtures |
+| `parse_patch` | Grammar + spans (incl. `@@` anchors, `*** End of File`) | Malformed corpus; no tempdir |
+| `apply_update` | `locate_chunks` + `emit_chunks` + newlines | String fixtures; CRLF matrix; EOF |
 | `commit_plan` | Revalidate + temps + rollback | Tempdirs + fault `FileSystem` |
-| `app::run` | Wire + public errors/exits | `assert_cmd`; `scripts/dogfood` |
+| `app::run` | Wire + public errors/exits | `assert_cmd`; Codex fixtures; `scripts/dogfood` |
 
 ## Adapters
 
@@ -34,7 +34,7 @@ Commit: `revalidate`, `prepare_temps`, `commit_entries`, `rollback`.
 
 ## Layout
 
-`crates/agent-patch/src/` — one concern per file. Prefer `engine/{locate,emit}.rs` over growing CLI/match logic in `app.rs`.
+`crates/agent-patch/src/` — one concern per file. Engine split: `engine/{matcher,locate,emit,apply,diff_summary}.rs`.
 
 ## Avoid
 

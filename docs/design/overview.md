@@ -42,11 +42,12 @@ CLI (clap) → app::run
 ## Product choices (deliberate deltas)
 
 1. Unique exact match → `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` (no first-match-wins).
-2. No default rstrip/strip/unicode fuzz (optional `--fuzzy` is v1.1+ only, still unique).
+2. No default rstrip/strip/unicode fuzz (optional `--fuzzy` remains out of scope; still unique if ever added).
 3. Full in-memory apply then transactional commit + rollback (vs Codex/Agents sequential writes).
 4. Add never overwrites.
-5. `*** Move to:` deferred (protocol-compatible later; see [`../research-next-pass.md`](../research-next-pass.md)). `*** End of File` is supported (EOF-prefer exact locate).
+5. `*** End of File` with EOF-prefer exact locate; `*** Move to:` out of v1 ([`move.md`](move.md)).
 6. Observational diffs via `similar` only.
+7. Locate all chunks on the original lines, then forward-cursor emit (`engine/locate.rs`, `engine/emit.rs`).
 
 ## Data flow
 

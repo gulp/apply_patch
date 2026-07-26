@@ -9,8 +9,10 @@ Crates in use:
 - `camino` or strict `PathBuf` helpers — repo-relative paths
 - `proptest` — parser / path properties
 - `assert_cmd` / `predicates` — CLI tests
+- `criterion` — `benches/apply_update.rs`
 - `insta` — optional diagnostic snapshots
 - `thiserror` — optional internals; public errors stay `PublicError` / `ErrorCode`
+- `libfuzzer-sys` — via `fuzz/` workspace (`cargo-fuzz`), not the main crate
 
 Not on the V4A apply path:
 

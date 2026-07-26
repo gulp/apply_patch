@@ -26,7 +26,7 @@ Do not rematch a mutating buffer. Agents (`_apply_chunks`) and Codex (`compute_r
 Phase A — Locate (original lines, forward cursor)
   for each hunk:
       if @@ <anchor>: unique exact line for <anchor> at/after cursor, else fail
-      if *** End of File (when supported): prefer match at EOF, else search forward
+      if *** End of File: prefer exact match at EOF, else unique forward search
       candidates ← exact old-side matches in window
       optional context reduction → accept only if unique
       0 → HUNK_NOT_FOUND; >1 → HUNK_AMBIGUOUS
@@ -71,7 +71,7 @@ emit: join with snapshot newline; preserve final_newline; preserve leading U+FEF
 Add File: join +lines with \n
 ```
 
-JS Agents `applyDiff` always joins with `\n` — prefer Python Agents policy (file wins).
+JS Agents `applyDiff` always joins with `\n`. `agent-patch` follows the Python Agents policy: file newline wins on update.
 
 ## Create path
 
@@ -91,23 +91,25 @@ Outside `apply_update`: `join(plus_lines, "\n")` (+ trailing newline when non-em
 - `diffy::apply` / `flickzeug::apply`
 - Default rstrip/strip/unicode fuzz (Codex `seek_sequence` / Agents fuzz ladder)
 - First-match-wins
-- `*** Move to:` until contract enables it
+- `*** Move to:` (see [`move.md`](move.md))
 
-`*** End of File` is supported: prefer exact match at `len - old_len`, else unique forward search.
+`*** End of File`: prefer exact match at `len - old_len`, else unique forward search. Pure `+` insertion with `*** End of File` appends at EOF.
 
 ## Crate map
 
 | File | Role |
 | --- | --- |
 | `engine/matcher.rs` | Unique exact match + context reduction (`find_unique_match`) |
-| `engine/locate.rs` | Phase A: `locate_chunks` on original lines (forward cursor, `@@` anchors) |
+| `engine/locate.rs` | Phase A: `locate_chunks` on original lines (forward cursor, `@@` anchors, EOF) |
 | `engine/emit.rs` | Phase B: `emit_chunks` forward cursor join |
 | `engine/apply.rs` | `apply_update` orchestration, split/join, newline detect |
 | `engine/diff_summary.rs` | `similar` line counts |
 
-## Tests worth porting
+## Tests
 
-- Agents exact examples (skip fuzz-dependent cases): `openai-agents-js/.../applyDiff.test.ts`
-- CRLF file + LF patch → CRLF out: Agents Python `test_apply_diff.py`
-- Ambiguity / overlap / unique `@@` anchor
-- Codex scenarios that assume exact context (not overwrite-Add / partial-commit)
+- Unit: exact / ambiguous / not-found, `@@` anchors, EOF-prefer, CRLF file-wins matrix, multi-hunk locate→emit
+- Integration: CLI, atomicity, concurrency, path safety, limits
+- Codex portable subset: `tests/fixtures/codex-scenarios/` + `tests/codex_scenarios.rs`
+- Dogfood: `scripts/dogfood` (includes EOF)
+- Fuzz: `fuzz/fuzz_targets/{parse_patch,path_policy,apply_update}.rs`
+- Bench: `benches/apply_update.rs`
