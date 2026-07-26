@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# Phase 8 dogfood gate for agent-patch.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AP="${ROOT}/scripts/agent-patch"
+if [[ ! -x "${ROOT}/target/release/agent-patch" && ! -x "${ROOT}/target/debug/agent-patch" ]]; then
+  cargo build --release --manifest-path "${ROOT}/Cargo.toml"
+fi
+
+DF="$(mktemp -d /tmp/agent-patch-dogfood.XXXXXX)"
+cleanup() { rm -rf "$DF"; }
+trap cleanup EXIT
+
+mkdir -p "$DF/src" "$DF/docs" "$DF/config"
+cat >"$DF/src/lib.rs" <<'EOF'
+pub const VERSION: &str = "0.1.0";
+pub const RETRIES: usize = 2;
+pub const TIMEOUT_SECS: u64 = 30;
+
+pub fn greet(name: &str) -> String {
+    format!("hello, {name}")
+}
+
+pub fn compute(a: i32, b: i32) -> i32 {
+    a + b
+}
+EOF
+cat >"$DF/src/util.rs" <<'EOF'
+pub fn twice(x: i32) -> i32 {
+    x * 2
+}
+EOF
+cat >"$DF/config/app.toml" <<'EOF'
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[limits]
+max_connections = 100
+EOF
+cat >"$DF/docs/README.md" <<'EOF'
+# Sample App
+
+Timeout is 30 seconds.
+EOF
+cat >"$DF/src/repeated.rs" <<'EOF'
+fn block_a() {
+    let x = 1;
+    let y = 2;
+}
+
+fn block_b() {
+    let x = 1;
+    let y = 2;
+}
+EOF
+
+pass=0
+fail=0
+note() { printf '%s\n' "$*"; }
+ok() { note "PASS $1"; pass=$((pass + 1)); }
+bad() { note "FAIL $1 — $2"; fail=$((fail + 1)); }
+
+run_json() {
+  local patch_file=$1
+  shift
+  "$AP" --json --root "$DF" "$@" "$patch_file"
+}
+
+# T1 single localized
+cat >"$DF/t1.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/lib.rs
+@@
+ pub const RETRIES: usize = 2;
+-pub const TIMEOUT_SECS: u64 = 30;
++pub const TIMEOUT_SECS: u64 = 45;
+*** End Patch
+PATCH
+if run_json "$DF/t1.patch" >/tmp/ap-dog-out.json && grep -q 'TIMEOUT_SECS: u64 = 45' "$DF/src/lib.rs"; then
+  ok T1-single
+else
+  bad T1-single "$(cat /tmp/ap-dog-out.json)"
+fi
+
+# T2 multi-hunk
+cat >"$DF/t2.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/lib.rs
+@@
+-pub const VERSION: &str = "0.1.0";
++pub const VERSION: &str = "0.2.0";
+@@
+ pub fn greet(name: &str) -> String {
+-    format!("hello, {name}")
++    format!("hi, {name}")
+ }
+@@
+ pub fn compute(a: i32, b: i32) -> i32 {
+-    a + b
++    a.saturating_add(b)
+ }
+*** End Patch
+PATCH
+if run_json "$DF/t2.patch" >/tmp/ap-dog-out.json \
+  && grep -q '0.2.0' "$DF/src/lib.rs" \
+  && grep -q 'hi, {name}' "$DF/src/lib.rs"; then
+  ok T2-multi-hunk
+else
+  bad T2-multi-hunk "$(cat /tmp/ap-dog-out.json)"
+fi
+
+# T3 multi-file
+cat >"$DF/t3.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: config/app.toml
+@@
+-port = 8080
++port = 9090
+*** Update File: docs/README.md
+@@
+-Timeout is 30 seconds.
++Timeout is 45 seconds.
+*** Update File: src/util.rs
+@@
+-    x * 2
++    x.saturating_mul(2)
+*** End Patch
+PATCH
+if run_json "$DF/t3.patch" >/tmp/ap-dog-out.json \
+  && grep -q 'port = 9090' "$DF/config/app.toml" \
+  && grep -q '45 seconds' "$DF/docs/README.md"; then
+  ok T3-multi-file
+else
+  bad T3-multi-file "$(cat /tmp/ap-dog-out.json)"
+fi
+
+# T4 user-supplied add+update
+cat >"$DF/t4.patch" <<'PATCH'
+*** Begin Patch
+*** Add File: src/metrics.rs
++pub fn hit(c: &mut u64) { *c += 1; }
+*** Update File: config/app.toml
+@@
+-max_connections = 100
++max_connections = 250
+*** End Patch
+PATCH
+if run_json "$DF/t4.patch" >/tmp/ap-dog-out.json \
+  && test -f "$DF/src/metrics.rs" \
+  && grep -q 'max_connections = 250' "$DF/config/app.toml"; then
+  ok T4-user-patch
+else
+  bad T4-user-patch "$(cat /tmp/ap-dog-out.json)"
+fi
+
+# T5 stale then recover
+cat >"$DF/t5-stale.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/lib.rs
+@@
+-pub const TIMEOUT_SECS: u64 = 30;
++pub const TIMEOUT_SECS: u64 = 99;
+*** End Patch
+PATCH
+before=$(cat "$DF/src/lib.rs")
+set +e
+out=$(run_json "$DF/t5-stale.patch" 2>&1)
+ec=$?
+set -e
+after=$(cat "$DF/src/lib.rs")
+if [[ $ec -ne 0 && "$before" == "$after" && "$out" == *HUNK_NOT_FOUND* ]]; then
+  cat >"$DF/t5-fresh.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/lib.rs
+@@
+-pub const TIMEOUT_SECS: u64 = 45;
++pub const TIMEOUT_SECS: u64 = 99;
+*** End Patch
+PATCH
+  if run_json "$DF/t5-fresh.patch" >/tmp/ap-dog-out.json \
+    && grep -q 'TIMEOUT_SECS: u64 = 99' "$DF/src/lib.rs"; then
+    ok T5-stale-recovery
+  else
+    bad T5-stale-recovery "recovery failed: $(cat /tmp/ap-dog-out.json)"
+  fi
+else
+  bad T5-stale-recovery "stale not rejected cleanly ec=$ec out=$out"
+fi
+
+# T6 ambiguous then recover
+before=$(cat "$DF/src/repeated.rs")
+cat >"$DF/t6-amb.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/repeated.rs
+@@
+-    let x = 1;
++    let x = 10;
+*** End Patch
+PATCH
+set +e
+out=$(run_json "$DF/t6-amb.patch" 2>&1)
+ec=$?
+set -e
+after=$(cat "$DF/src/repeated.rs")
+if [[ $ec -ne 0 && "$before" == "$after" && "$out" == *HUNK_AMBIGUOUS* ]]; then
+  cat >"$DF/t6-fix.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/repeated.rs
+@@
+ fn block_b() {
+-    let x = 1;
++    let x = 10;
+     let y = 2;
+ }
+*** End Patch
+PATCH
+  if run_json "$DF/t6-fix.patch" >/tmp/ap-dog-out.json; then
+    a_part=$(sed -n '/fn block_a/,/fn block_b/p' "$DF/src/repeated.rs")
+    b_part=$(sed -n '/fn block_b/,$p' "$DF/src/repeated.rs")
+    if [[ "$a_part" == *'let x = 1;'* && "$b_part" == *'let x = 10;'* ]]; then
+      ok T6-ambiguous-recovery
+    else
+      bad T6-ambiguous-recovery "wrong target edited"
+    fi
+  else
+    bad T6-ambiguous-recovery "recovery apply failed"
+  fi
+else
+  bad T6-ambiguous-recovery "ambiguous not rejected cleanly ec=$ec out=$out"
+fi
+
+# T7 add+delete
+echo temporary >"$DF/src/temp_old.rs"
+cat >"$DF/t7.patch" <<'PATCH'
+*** Begin Patch
+*** Add File: src/new_module.rs
++pub const FLAG: bool = true;
+*** Delete File: src/temp_old.rs
+*** End Patch
+PATCH
+if run_json "$DF/t7.patch" >/tmp/ap-dog-out.json \
+  && test -f "$DF/src/new_module.rs" \
+  && ! test -f "$DF/src/temp_old.rs"; then
+  ok T7-add-delete
+else
+  bad T7-add-delete "$(cat /tmp/ap-dog-out.json)"
+fi
+
+# TX unsafe path
+cat >"$DF/tx.patch" <<'PATCH'
+*** Begin Patch
+*** Add File: ../evil.txt
++pwned
+*** End Patch
+PATCH
+set +e
+out=$(run_json "$DF/tx.patch" 2>&1)
+ec=$?
+set -e
+if [[ $ec -eq 4 && "$out" == *INVALID_PATH* && ! -f "$DF/../evil.txt" ]]; then
+  ok TX-unsafe-path
+else
+  bad TX-unsafe-path "ec=$ec out=$out"
+fi
+
+# TY check then apply
+cat >"$DF/ty.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/util.rs
+@@
+ pub fn twice(x: i32) -> i32 {
+-    x.saturating_mul(2)
++    x.saturating_mul(3)
+ }
+*** End Patch
+PATCH
+before=$(cat "$DF/src/util.rs")
+set +e
+outc=$(run_json "$DF/ty.patch" --check 2>&1)
+ecc=$?
+set -e
+mid=$(cat "$DF/src/util.rs")
+set +e
+outa=$(run_json "$DF/ty.patch" 2>&1)
+eca=$?
+set -e
+if [[ $ecc -eq 0 && $eca -eq 0 && "$before" == "$mid" && "$outa" == *'"ok": true'* ]]; then
+  ok TY-check-apply
+else
+  bad TY-check-apply "ecc=$ecc eca=$eca"
+fi
+
+note ""
+note "dogfood: $pass passed, $fail failed"
+if [[ $fail -ne 0 ]]; then
+  exit 1
+fi

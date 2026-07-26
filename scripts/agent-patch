@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="${ROOT}/target/release/agent-patch"
+DEBUG_BIN="${ROOT}/target/debug/agent-patch"
+
+if [[ -x "$BIN" ]]; then
+  exec "$BIN" "$@"
+elif [[ -x "$DEBUG_BIN" ]]; then
+  exec "$DEBUG_BIN" "$@"
+else
+  exec cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" --bin agent-patch -- "$@"
+fi
