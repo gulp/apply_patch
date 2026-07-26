@@ -2,6 +2,7 @@
 resolver = "2"
 members = ["crates/agent-patch"]
 default-members = ["crates/agent-patch"]
+# Fuzz targets live in ./fuzz and use cargo-fuzz's own workspace (not listed here).
 
 [workspace.package]
 version = "0.1.0"
@@ -22,3 +23,4 @@ proptest = "1.5"
 assert_cmd = "2.0"
 predicates = "3.1"
 insta = { version = "1.41", features = ["json"] }
+criterion = "0.5"
