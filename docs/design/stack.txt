@@ -1,0 +1,18 @@
+Chosen stack (post-research; replaces earlier “diffy for apply” assumption):
+
+- `clap` — CLI parsing
+- `serde` / `serde_json` — structured output
+- `similar` — observational line counts / optional unified summary only
+- custom exact locator + cursor emit — apply engine (not `diffy` / not `flickzeug`)
+- `thiserror` — optional internal errors; public surface stays `PublicError` / `ErrorCode`
+- `tempfile` — same-directory exclusive temps
+- `blake3` — content fingerprints (labeled in JSON)
+- `camino` or strict `PathBuf` helpers — repo-relative paths
+- `proptest` — parser / path property tests
+- `assert_cmd` / `predicates` — CLI integration tests
+- `insta` — optional diagnostic snapshots
+
+Explicitly not in the apply path:
+
+- `diffy` — unified-diff display/parse only if a future UI needs it
+- `fs2` — not required for v1 concurrency design (hash revalidation)
