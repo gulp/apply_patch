@@ -1,0 +1,5 @@
+# Copy to .envrc and run: direnv allow
+# Puts scripts/ on PATH so `agent-patch` resolves to scripts/agent-patch
+# (release → debug → cargo run). Does not install a global binary.
+
+PATH_add scripts
