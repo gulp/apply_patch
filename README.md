@@ -10,13 +10,46 @@ The patch dialect matches the Codex / OpenAI Agents V4A family (`*** Begin Patch
 cargo build --release
 ```
 
-Binary: `target/release/agent-patch`
+Binary: `target/release/agent-patch`. The compiled name is `agent-patch`, but it is **not** installed on your `PATH` after clone.
 
-Repo-local wrapper (release → debug → `cargo run`):
+### Run (recommended)
+
+Use the repo wrapper — no install, picks release → debug → `cargo run`:
 
 ```bash
 scripts/agent-patch --help
 ```
+
+This is the canonical entrypoint for agents and humans. Prefer it in docs and scripts.
+
+### Optional: put `agent-patch` on PATH while in this repo
+
+The wrapper file is already named `scripts/agent-patch`, so prepending `scripts/` to `PATH` makes the bare command work:
+
+```bash
+# session-only
+export PATH="$PWD/scripts:$PATH"
+agent-patch --help
+```
+
+Or with [direnv](https://direnv.net/):
+
+```bash
+cp .envrc.example .envrc   # PATH_add scripts
+direnv allow
+agent-patch --help
+```
+
+### Optional: install globally (Cargo bin)
+
+Requires `~/.cargo/bin` on your `PATH` (normal for Rust toolchains):
+
+```bash
+cargo install --path crates/agent-patch --force
+agent-patch --help
+```
+
+Use this when you want `agent-patch` outside this repo. Day-to-day work in-tree should still prefer `scripts/agent-patch` so you always run the tree you checked out.
 
 ## CLI
 
@@ -72,6 +105,21 @@ Constrain the root:
 scripts/agent-patch --root "$PWD" < change.patch
 ```
 
+EOF-prefer update (trailing duplicate context):
+
+```bash
+scripts/agent-patch <<'PATCH'
+*** Begin Patch
+*** Update File: src/tail.rs
+@@
+ context
+-old
++new
+*** End of File
+*** End Patch
+PATCH
+```
+
 ## Protocol (v1)
 
 Envelope:
@@ -85,14 +133,21 @@ Envelope:
 | Operation | Role |
 | --- | --- |
 | `*** Add File: path` | Create a missing file (`+` content lines) |
-| `*** Update File: path` | Contextual hunks (`@@`, ` `, `-`, `+`) |
+| `*** Update File: path` | Contextual hunks (`@@` / `@@ <anchor>`, ` `, `-`, `+`); optional `*** End of File` |
 | `*** Delete File: path` | Remove an existing regular file |
 
-`*** Move File` / `*** Move to:` are not supported in v1.
+`*** Move File` / `*** Move to:` are not supported in v1 (design notes: [docs/design/move.md](docs/design/move.md)).
+
+### Update matching
+
+- Hunks start with bare `@@` or `@@ <anchor>` (unique exact line at/after the search cursor). Unified-diff numeric headers such as `@@ -1,3 +1,4 @@` are ignored as location math; the body still matches exactly.
+- Matching is unique and exact on logical lines. Ambiguous or missing context fails closed (`HUNK_AMBIGUOUS` / `HUNK_NOT_FOUND`). No whitespace-fuzzy or first-match-wins behavior.
+- Optional trailing `*** End of File` prefers an exact match aligned at EOF, then falls back to unique forward search.
+- Controlled edge-context reduction applies only when the reduced needle remains unique.
+- Apply resolves all hunks on the original line array, then emits with a forward cursor (no rematch against a mutating buffer).
+- On update, the file’s LF or CRLF style wins; mixed endings are rejected. Add File content uses LF.
 
 Paths are repository-relative. Absolute paths, `.` / `..`, and symlink escape outside `--root` are rejected.
-
-Matching is unique and exact. Ambiguous or missing context fails closed (`HUNK_AMBIGUOUS` / `HUNK_NOT_FOUND`). Whitespace-fuzzy and first-match-wins behavior are not used.
 
 Full grammar: [docs/protocol.md](docs/protocol.md). Frozen semantics: [docs/contract-v1.md](docs/contract-v1.md).
 
@@ -100,9 +155,9 @@ Full grammar: [docs/protocol.md](docs/protocol.md). Frozen semantics: [docs/cont
 
 1. Parse and validate the entire patch.
 2. Snapshot every affected path under the configured root.
-3. Apply all updates in memory (locate chunks, then emit).
+3. Apply all updates in memory (`locate_chunks` → `emit_chunks`).
 4. On `--check`, report success or failure and exit without writes.
-5. Otherwise revalidate content fingerprints, commit via same-directory temps and atomic rename, and roll back on failure.
+5. Otherwise revalidate content fingerprints (BLAKE3), commit via same-directory temps and atomic rename, and roll back on failure.
 
 `--check` runs the same parse / validate / snapshot / apply path as apply mode; it never creates temps or mutates the tree.
 
@@ -132,19 +187,32 @@ Granular codes (`HUNK_NOT_FOUND`, `INVALID_PATH`, …): [docs/errors.md](docs/er
 ```bash
 scripts/test      # cargo fmt --check, clippy -D warnings, cargo test
 scripts/lint      # fmt --check + clippy
-scripts/dogfood   # end-to-end scenario gate (add/update/delete, stale, ambiguous, path safety)
-scripts/bench     # cargo bench (when benches are present)
+scripts/dogfood   # end-to-end gate (multi-hunk/file, stale, ambiguous, add/delete, path safety, --check, EOF)
+scripts/bench     # Criterion: cargo bench --workspace
 ```
+
+Tests of note:
+
+| Suite | What it covers |
+| --- | --- |
+| `cargo test --workspace` | Unit + CLI integration (atomicity, concurrency, path safety, limits) |
+| `tests/codex_scenarios.rs` | Portable Codex fixture subset under `tests/fixtures/codex-scenarios/` |
+| `scripts/dogfood` | Phase-8 style acceptance; rebuilds release before running |
+| `fuzz/` | `cargo-fuzz` targets: `parse_patch`, `path_policy`, `apply_update` (see [fuzz/README.md](fuzz/README.md)) |
+| `benches/apply_update.rs` | Locate→emit throughput on a multi-thousand-line buffer |
+
+CI (Linux and macOS): `fmt` + `clippy -D warnings` + `cargo test --workspace` + `scripts/dogfood`.
 
 Workspace layout:
 
 ```text
-crates/agent-patch/   # library + binary
+crates/agent-patch/   # library + binary (+ benches, integration tests)
+fuzz/                 # cargo-fuzz workspace (parse / path / apply)
 scripts/              # agent-patch, test, lint, dogfood, bench
 docs/                 # protocol, contract, errors, design, research
 ```
 
-Design: [docs/design/](docs/design/). Threat model: [docs/threat-model.md](docs/threat-model.md).
+Design: [docs/design/](docs/design/). Threat model: [docs/threat-model.md](docs/threat-model.md). Active plan: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Backlog: [docs/research-next-pass.md](docs/research-next-pass.md). Archived greenfield plan: [docs/archive/2026-07-greenfield-implementation-plan.md](docs/archive/2026-07-greenfield-implementation-plan.md).
 
 ## License
 

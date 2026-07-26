@@ -6,7 +6,9 @@ Operational guide for coding agents in this repository.
 
 Native exact-replacement for one small unique string change.
 
-Use `scripts/agent-patch` for multi-hunk or multi-file atomic edits, contextual add/remove, or user-supplied patches:
+Use `scripts/agent-patch` for multi-hunk or multi-file atomic edits, contextual add/remove, EOF-prefer updates, or user-supplied patches. Cursor skill: [`.cursor/skills/agent-patch/SKILL.md`](.cursor/skills/agent-patch/SKILL.md).
+
+`agent-patch` is **not** on `PATH` — always invoke `scripts/agent-patch` from the repo root (release → debug → `cargo run`).
 
 ```bash
 scripts/agent-patch <<'PATCH'
@@ -38,8 +40,17 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 scripts/test          # fmt --check + clippy -D warnings + tests
 scripts/lint
-scripts/dogfood       # stale / ambiguous / path safety / add-delete gate
+scripts/dogfood       # stale / ambiguous / path safety / add-delete / EOF gate
+scripts/bench         # Criterion benches
 scripts/agent-patch   # release → debug → cargo run
+```
+
+Fuzz (nightly + `cargo-fuzz`; see [fuzz/README.md](fuzz/README.md)):
+
+```bash
+cargo +nightly fuzz run parse_patch -- -max_total_time=60
+cargo +nightly fuzz run path_policy -- -max_total_time=60
+cargo +nightly fuzz run apply_update -- -max_total_time=60
 ```
 
 ## Rules
@@ -53,10 +64,11 @@ scripts/agent-patch   # release → debug → cargo run
 
 ## Engine facts
 
-- Apply = custom unique-exact match + in-memory plan + transactional commit. Observational diffs: `similar`.
+- Apply = `locate_chunks` + `emit_chunks` (unique-exact, forward cursor) + in-memory plan + transactional commit. Observational diffs: `similar`.
+- Modules: `engine/{matcher,locate,emit,apply,diff_summary}.rs`.
 - **`diffy` / `flickzeug` are not V4A apply backends** (unified-diff display or fuzzy unified apply elsewhere).
-- Prefer locate-all → forward emit (`docs/design/apply-engine.md`) over rematch-after-mutate.
-- Update: file LF/CRLF wins; reject mixed. Fingerprints: BLAKE3.
+- Update: file LF/CRLF wins; reject mixed. `*** End of File` → EOF-prefer exact locate. Fingerprints: BLAKE3.
+- Codex-compatible fixtures: `crates/agent-patch/tests/fixtures/codex-scenarios/` (unique-exact subset).
 
 ## Avoid
 
@@ -96,10 +108,11 @@ Literal code (or `useRegexp`), not English. Examples: `"*** End of File"`, `seek
 1. grep-app markers/APIs → repos/paths  
 2. `opensrc path owner/repo#main` or `crates:name`  
 3. Update `docs/research-*.md` / `docs/design/` when semantics matter  
-4. Backlog: [docs/research-next-pass.md](docs/research-next-pass.md)
+4. Active plan: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) · backlog: [docs/research-next-pass.md](docs/research-next-pass.md)
 
 ## Reference
 
 - [README.md](README.md) — CLI, protocol summary  
 - [docs/contract-v1.md](docs/contract-v1.md) · [docs/protocol.md](docs/protocol.md) · [docs/errors.md](docs/errors.md)  
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — active post-v1 plan  
 - [docs/design/](docs/design/) · [docs/research-codex-apply-patch.md](docs/research-codex-apply-patch.md) · [docs/research-openai-agents-apply-diff.md](docs/research-openai-agents-apply-diff.md) · [docs/research-next-pass.md](docs/research-next-pass.md)
