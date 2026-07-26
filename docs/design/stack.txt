@@ -1,18 +1,19 @@
-Chosen stack (post-research; replaces earlier “diffy for apply” assumption):
+Crates in use:
 
-- `clap` — CLI parsing
-- `serde` / `serde_json` — structured output
-- `similar` — observational line counts / optional unified summary only
-- custom exact locator + cursor emit — apply engine (not `diffy` / not `flickzeug`)
-- `thiserror` — optional internal errors; public surface stays `PublicError` / `ErrorCode`
-- `tempfile` — same-directory exclusive temps
-- `blake3` — content fingerprints (labeled in JSON)
+- `clap` — CLI
+- `serde` / `serde_json` — JSON output
+- `similar` — observational line counts / summaries only (Codex apply-patch does the same)
+- custom exact locator + cursor emit — V4A apply engine
+- `tempfile` — exclusive same-directory temps
+- `blake3` — content fingerprints (`blake3` in JSON)
 - `camino` or strict `PathBuf` helpers — repo-relative paths
-- `proptest` — parser / path property tests
-- `assert_cmd` / `predicates` — CLI integration tests
+- `proptest` — parser / path properties
+- `assert_cmd` / `predicates` — CLI tests
 - `insta` — optional diagnostic snapshots
+- `thiserror` — optional internals; public errors stay `PublicError` / `ErrorCode`
 
-Explicitly not in the apply path:
+Not on the V4A apply path:
 
-- `diffy` — unified-diff display/parse only if a future UI needs it
-- `fs2` — not required for v1 concurrency design (hash revalidation)
+- `diffy` — unified-diff parse/format/display (Codex TUI, Zed ACP UI)
+- `flickzeug` — `diffy` fork with `FuzzyConfig` / unified `apply` (rattler-build, cargo-mutants); still not V4A
+- `fs2` — unused; concurrency = blake3 revalidation

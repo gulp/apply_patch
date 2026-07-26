@@ -1,98 +1,60 @@
-# Elegant Solution Overview
+# Overview
 
 ## Problem
 
-Coding agents need localized, multi-file edits that are:
+Agents need localized multi-file edits that are model-legible (V4A), fail-closed (no wrong edit, no partial tree), and runnable as one CLI (`scripts/agent-patch`).
 
-- **model-legible** (Codex / OpenAI Agents V4A `*** Begin Patch` dialect);
-- **safe** (no path escape, no silent wrong edit, no partial tree);
-- **harness-simple** (one CLI, stdin or file, stable exits and JSON).
-
-Whole-file rewrite and fuzzy “best effort” apply both fail those constraints.
-
-## Solution shape
-
-Three deep modules, one pipeline:
+## Pipeline
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│ CLI (clap)                                                  │
-│   stdin|file → AppConfig → stdout/stderr/exit               │
-└───────────────────────────┬─────────────────────────────────┘
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Application service                                         │
-│   orchestrate phases; no matching; no FS writes             │
-└───────────────────────────┬─────────────────────────────────┘
-          ┌─────────────────┼─────────────────┐
-          ▼                 ▼                 ▼
-   ┌────────────┐   ┌──────────────┐   ┌─────────────┐
-   │ Protocol   │   │ Path+Snapshot│   │ Apply engine│
-   │ parse only │   │ policy+load  │   │ pure text   │
-   └────────────┘   └──────────────┘   └─────────────┘
-                            │
-                            ▼
-                   ┌─────────────────┐
-                   │ Commit          │
-                   │ revalidate+FS   │
-                   └─────────────────┘
+CLI (clap) → app::run
+               ├─ parse_patch          (protocol only)
+               ├─ path policy + snapshot
+               ├─ validate + plan
+               ├─ apply_update         (pure text)
+               └─ commit_plan          (FS; skipped for --check)
 ```
 
 | Module | Knows | Must not know |
 | --- | --- | --- |
-| Protocol | Envelope grammar, spans | Filesystem, matching fuzz |
-| Path/Snapshot | Root confinement, bytes, fingerprints | Hunk syntax |
-| Apply engine | Locate + transform text | Paths, writes, JSON |
-| Commit | Temp files, rename, rollback | Patch dialect |
-| CLI | Args, I/O streams | Patch semantics |
+| Protocol | V4A grammar, spans | FS, matching |
+| Path / snapshot | Root, symlinks, bytes, blake3, newlines | Hunk syntax |
+| Apply engine | Locate + emit text | Paths, writes, JSON |
+| Commit | Temps, rename, rollback | Patch dialect |
+| CLI | Flags, streams, exit codes | Match algorithms |
 
-## Inheritance map
+## Ground truth (verified)
 
-Aligned with OpenAI stacks:
+| Fact | Source |
+| --- | --- |
+| V4A markers: `*** Begin/End Patch`, Add / Update / Delete; optional `*** Move to:`, `*** End of File` | Codex `codex-rs/apply-patch/src/parser.rs`; Agents `apply_patch_tool.py`; Aider `patch_coder.py` |
+| Codex apply uses custom `seek_sequence` + `similar` for unified summaries — **not** `diffy` | `codex-rs/apply-patch/Cargo.toml`, `lib.rs`, `seek_sequence.rs` |
+| Codex workspace `diffy` is for TUI / mock unified-diff **display** | `codex-rs/tui/src/diff_render.rs` |
+| Zed `codex-acp` depends on both: `parse_patch` for tool UI; `diffy::Patch::from_str` for unified-diff UI | `codex-acp/Cargo.toml`, `src/thread.rs` |
+| Agents Python/JS `apply_diff` / `applyDiff`: headerless per-file body; locate on original lines; forward cursor emit; create mode = `+` lines only | `openai-agents-python/src/agents/apply_diff.py`; `openai-agents-js/.../applyDiff.ts` |
+| Agents Python: file newline wins on update (LF↔CRLF); JS always rejoins with `\n` | Python `test_apply_diff.py` vs JS `applyDiff.ts` |
+| Codex/Agents/Aider: first-match + whitespace/unicode fuzz ladders | `seek_sequence.rs`; Agents `_find_context_core`; Aider `find_context_core` |
+| Codex is **not** multi-op transactional; scenario `015_*leaves_changes` | `codex-rs/apply-patch/tests/fixtures/scenarios/` |
+| Codex Add may overwrite; we reject with `FILE_ALREADY_EXISTS` | Codex scenario `011_add_overwrites_*` vs our contract |
+| `flickzeug` = maintained `diffy` fork; unified-diff + `FuzzyConfig`; used by rattler-build / cargo-mutants — **not** V4A | `crates:flickzeug` `src/apply.rs`, README |
+| Portable fixtures: `input/` + `patch.txt` + `expected/` | Codex `tests/fixtures/scenarios/README.md` |
 
-1. **V4A envelope** — `Begin/End Patch`, Add / Update / Delete (Move deferred).
-2. **Headerless per-file diff body** for updates — `@@` + ` `/`-`/`+` lines.
-3. **Locate-then-emit chunks** — resolve match positions on the original line array, then apply with a forward cursor.
-4. **`@@` as a seek anchor** — narrows the search window; does not authorize fuzzy line equality.
-5. **`similar` for observation only** — line counts / optional unified summary after success.
-6. **Newline policy** — normalize to LF for matching; re-emit using the file’s LF/CRLF.
-7. **Portable scenario fixtures** — `input/` + `patch.txt` + `expected/`.
+## Product choices (deliberate deltas)
 
-Deliberately different:
+1. Unique exact match → `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` (no first-match-wins).
+2. No default rstrip/strip/unicode fuzz (optional `--fuzzy` is v1.1+ only, still unique).
+3. Full in-memory apply then transactional commit + rollback (vs Codex/Agents sequential writes).
+4. Add never overwrites.
+5. `*** Move to:` and `*** End of File` deferred (protocol-compatible later; see [`../research-next-pass.md`](../research-next-pass.md)).
+6. Observational diffs via `similar` only.
 
-1. **No `diffy` as apply backend** — `diffy` is for unified-diff display elsewhere; apply is custom.
-2. **Unique match required** — zero hits → `HUNK_NOT_FOUND`; multiple → `HUNK_AMBIGUOUS`.
-3. **No silent whitespace / Unicode fuzz** in default mode.
-4. **Transactional commit** — validation failure or mid-commit failure leaves no partial intended tree (rollback).
-5. **Add does not overwrite** — existing path → `FILE_ALREADY_EXISTS`.
-
-## Differentiator
-
-```text
-Typical agent apply paths:  success rate  ↑   via fuzzy locate + sequential writes
-agent-patch:                safety        ↑   via unique exact locate + transactional commit
-```
-
-Same dialect so agents can transfer skill; fail-closed runtime so harnesses can trust the tree.
-
-## End-to-end data flow
+## Data flow
 
 ```text
-patch bytes
-  → limit check
-  → parse envelope → PatchDocument
-  → validate paths + limits + duplicates
-  → canonicalize root; resolve under root (no symlink escape)
-  → snapshot each path (Missing | Present{bytes, text, blake3, newline, perms})
-  → validate op↔state (Add/Update/Delete rules; reject mixed newlines on update)
-  → for each Update: apply_engine(text, hunks) → final bytes   ⎫ all in memory
-    for each Add:    materialize create bytes                   ⎬ no FS mutation
-    for each Delete: plan remove                                ⎭
-  → reject PATCH_NO_EFFECT if nothing changes
-  → if --check: emit success and stop
-  → revalidate fingerprints
-  → prepare temps → commit → rollback on failure
-  → emit human or JSON summary
+patch bytes → limits → parse → path validate → snapshot → op↔state validate
+  → in-memory apply (Update/Add/Delete plan) → PATCH_NO_EFFECT check
+  → --check? emit and stop
+  → revalidate blake3 → prepare temps → commit → rollback on failure → emit
 ```
 
 ## Public surface
@@ -103,22 +65,26 @@ scripts/agent-patch [--check] [--json] [--quiet] [--root PATH]
                     [PATCH_FILE]
 ```
 
-Exit codes and error codes: [`../errors.md`](../errors.md), [`../contract-v1.md`](../contract-v1.md).
+Exits / codes: [`../errors.md`](../errors.md), [`../contract-v1.md`](../contract-v1.md).
 
 ## Non-goals
 
-No AST transforms, no fuzzy default, no Git staging, no MCP requirement, no binary files, no interactive resolution, no whole-file rewrite fallback.
+AST transforms; fuzzy default; Git stage/commit; MCP requirement; binary files; interactive conflict UI; whole-file rewrite fallback; `diffy`/`flickzeug` as V4A apply backend.
 
-## Roadmap sketch
+## Harmful patterns
 
-| Horizon | Scope |
+- Inferring apply algorithm from a dependency name (`diffy` in Codex workspace ≠ apply).
+- Feeding V4A text to `diffy::apply` / `flickzeug::apply` (unified-diff APIs).
+- Rematching against a buffer mutated after each hunk (prefer locate-all → emit).
+- Claiming multi-file FS atomicity without rollback (ordinary FS has none).
+- Implementing Move/EOF without contract bump and commit-order tests.
+
+## Deferred (fact-backed backlog)
+
+| Item | Why it matters |
 | --- | --- |
-| Engine hardening | Locate-all → cursor emit refactor; CRLF matrix tests |
-| v1.1 | Optional `*** Move to:`; optional `--fuzzy` with unique match at chosen fuzz level; `*** End of File` |
-| Corpus | Scenario fixtures aligned with Codex where semantics match |
-
-## Related docs
-
-- Contract: [`../contract-v1.md`](../contract-v1.md)
-- Protocol: [`../protocol.md`](../protocol.md)
-- Research: [`../research-codex-apply-patch.md`](../research-codex-apply-patch.md), [`../research-openai-agents-apply-diff.md`](../research-openai-agents-apply-diff.md)
+| `*** End of File` | In every major V4A grammar; EOF-preferring locate |
+| `*** Move to:` | Codex/Agents/OpenClaw/OpenCode; needs collision + rollback design |
+| Locate-all → cursor emit refactor | Matches Agents/Codex replacement model; simplifies overlap |
+| Codex scenario corpus (exact-only subset) | Shared dialect tests |
+| Optional path list helper | OpenClaw-style preflight for harnesses |

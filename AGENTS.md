@@ -1,18 +1,12 @@
 # Agent instructions
 
-Operational guide for coding agents working in this repository.
+Operational guide for coding agents in this repository.
 
-## Localized file editing
+## Localized edits
 
-Use the native exact-replacement edit for one small, unique string replacement.
+Native exact-replacement for one small unique string change.
 
-Use `scripts/agent-patch` when:
-
-- a change has multiple related hunks;
-- several files must change atomically;
-- additions or removals are clearer as contextual hunks;
-- the user supplied a patch;
-- exact replacement would require copying a large unchanged block.
+Use `scripts/agent-patch` for multi-hunk or multi-file atomic edits, contextual add/remove, or user-supplied patches:
 
 ```bash
 scripts/agent-patch <<'PATCH'
@@ -25,62 +19,87 @@ scripts/agent-patch <<'PATCH'
 PATCH
 ```
 
-Validate nontrivial patches first:
-
 ```bash
-scripts/agent-patch --check < /tmp/change.patch
+scripts/agent-patch --check < /tmp/change.patch   # validate, no writes
+scripts/agent-patch --help                        # do not guess flags
 ```
 
-On failure: read the current affected region, regenerate the patch from current content, and retry. Do not recover by rewriting the entire file. Do not guess flags — run `scripts/agent-patch --help`.
+On `HUNK_*` / stale failure: read current region, regenerate from current content, retry. Never whole-file overwrite as recovery.
 
-Prefer patch **files** (or heredocs fed directly to the process) over `$(... <<'PATCH')` command substitution; bash warns and can truncate nested heredocs.
+Prefer a patch file (or a heredoc as the process stdin). Do not nest heredocs inside `$(...)` — bash truncates them.
 
-## Development commands
+`CLAUDE.md` → this file.
+
+## Commands
 
 ```bash
 cargo build --release
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-scripts/test          # fmt check + clippy -D warnings + tests
-scripts/lint          # fmt check + clippy
-scripts/dogfood       # scenario gate (stale, ambiguous, path safety, add/delete)
-scripts/agent-patch   # repo-local CLI wrapper (release → debug → cargo run)
+scripts/test          # fmt --check + clippy -D warnings + tests
+scripts/lint
+scripts/dogfood       # stale / ambiguous / path safety / add-delete gate
+scripts/agent-patch   # release → debug → cargo run
 ```
 
-`CLAUDE.md` is a symlink to this file.
+## Rules
 
-## Working rules
+- Scope changes tightly; no drive-by refactors or unsolicited docs.
+- Commit only when asked.
+- Honor `docs/contract-v1.md` — no Move/EOF until the contract says so.
+- Match existing module and `ErrorCode` style.
+- Docs describe current state (no “we added / now changed” voice).
+- Product docs → `README.md`; this file stays operational.
 
-- Prefer localized patches over whole-file rewrites.
-- Keep changes scoped; do not add docs or refactors unrelated to the task.
-- Do not commit unless the user asks.
-- Public contract and protocol live under `docs/`; do not invent unsupported operations (no Move in v1).
-- Match existing Rust module layout and error-code style when extending the tool.
-- Frame documentation as current state; avoid “we added / now changed” narrative.
-- Product overview belongs in `README.md`; keep this file operational only.
+## Engine facts
 
-## Engine and dependency facts
-
-- Apply path is a **custom exact matcher** + in-memory plan + transactional commit. **`diffy` is not the apply backend** (Codex/Zed use it for unified-diff *display*). Observational diffs use `similar`.
-- Target apply shape: locate all chunks on the original lines, then emit with a forward cursor (`docs/design/apply-engine.md`). Prefer that over rematching a mutating buffer.
-- Default matching is fail-closed unique exact. Do not add silent whitespace/Unicode fuzz or first-match-wins.
-- On update, **file newline style wins** (preserve LF/CRLF); reject mixed endings. Fingerprints are BLAKE3.
-- Primary-source caches: `opensrc path openai/codex#main`, `openai/openai-agents-python#main`, `openai/openai-agents-js#main`, `zed-industries/codex-acp#main`. npm `@openai/agents` resolves to `openai/openai-agents-js` (opensrc npm fetch may fail — use the GitHub repo).
+- Apply = custom unique-exact match + in-memory plan + transactional commit. Observational diffs: `similar`.
+- **`diffy` / `flickzeug` are not V4A apply backends** (unified-diff display or fuzzy unified apply elsewhere).
+- Prefer locate-all → forward emit (`docs/design/apply-engine.md`) over rematch-after-mutate.
+- Update: file LF/CRLF wins; reject mixed. Fingerprints: BLAKE3.
 
 ## Avoid
 
-- Assuming a Cargo/`package.json` dependency implies the apply algorithm (verify call sites).
-- Partial filesystem writes before full in-memory validation; skipping rollback tests.
-- Recovering from `HUNK_*` / stale failures by overwriting whole files.
-- Guessing CLI flags or inventing protocol headers.
-- `opensrc openai/agents` (wrong); use `openai/openai-agents-python` or `openai/openai-agents-js`.
+- Inferring algorithms from dependency names — check call sites.
+- Writing the tree before full in-memory validation; skipping rollback tests.
+- Whole-file rewrite after patch failure.
+- Inventing protocol headers or CLI flags.
+- `opensrc openai/agents` → use `openai/openai-agents-python` or `openai/openai-agents-js`.
+- `diffy::apply` / `flickzeug::apply` on `*** Begin Patch` text.
 
-## Reference (read when needed)
+## Code reference search tools
 
-- [README.md](README.md) — product overview, CLI, protocol summary
-- [docs/contract-v1.md](docs/contract-v1.md) — frozen semantics
-- [docs/protocol.md](docs/protocol.md) — patch grammar
-- [docs/errors.md](docs/errors.md) — error codes and exits
-- [docs/design/](docs/design/) — architecture and engine design
-- [docs/research-codex-apply-patch.md](docs/research-codex-apply-patch.md)
-- [docs/research-openai-agents-apply-diff.md](docs/research-openai-agents-apply-diff.md)
+Primary sources only.
+
+### opensrc
+
+```bash
+opensrc path openai/codex#main
+opensrc path openai/openai-agents-python#main
+opensrc path openai/openai-agents-js#main
+opensrc path zed-industries/codex-acp#main
+opensrc path Aider-AI/aider#main
+opensrc path openclaw/openclaw#main
+opensrc path crates:flickzeug
+opensrc path crates:similar
+opensrc list
+```
+
+Stderr = progress; stdout = path (`$(opensrc path …)` is fine). Cache: `~/.opensrc/repos/…`. If npm `@scope/name` fails, `npm view … repository` then opensrc the GitHub repo. Always `rg`/Read call sites after fetch.
+
+### grep-app MCP (`searchGitHub`)
+
+Literal code (or `useRegexp`), not English. Examples: `"*** End of File"`, `seek_sequence(`, `FuzzyConfig`, `apply_diff(`. Narrow with `repo` / `language`. Discover callers → `opensrc path` → read full files.
+
+### Workflow
+
+1. grep-app markers/APIs → repos/paths  
+2. `opensrc path owner/repo#main` or `crates:name`  
+3. Update `docs/research-*.md` / `docs/design/` when semantics matter  
+4. Backlog: [docs/research-next-pass.md](docs/research-next-pass.md)
+
+## Reference
+
+- [README.md](README.md) — CLI, protocol summary  
+- [docs/contract-v1.md](docs/contract-v1.md) · [docs/protocol.md](docs/protocol.md) · [docs/errors.md](docs/errors.md)  
+- [docs/design/](docs/design/) · [docs/research-codex-apply-patch.md](docs/research-codex-apply-patch.md) · [docs/research-openai-agents-apply-diff.md](docs/research-openai-agents-apply-diff.md) · [docs/research-next-pass.md](docs/research-next-pass.md)

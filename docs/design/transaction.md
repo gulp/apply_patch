@@ -1,26 +1,23 @@
-# Transaction Design
+# Transaction
 
-Deep module: **validated plan in → tree mutation or clean failure**. Differentiator vs OpenAI apply paths.
+Validated plan → tree mutation or clean failure. Deliberate break from Codex/Agents sequential disk writes.
 
-## Guarantee (honest)
+## Guarantee
 
-> All operations are validated and applied in memory before any visible mutation. Per-file replacement uses same-directory temp + atomic rename where the OS allows. If a commit step fails after visible mutation begins, already-committed ops are rolled back from in-memory material. Multi-file atomic visibility is not a filesystem primitive; partial commits are actively undone and reported.
-
-Never claim database-style multi-file atomicity.
+All ops are validated and applied in memory before any visible mutation. Per-file replace uses same-directory temp + atomic rename where the OS allows. If commit fails after a visible mutation, committed ops roll back from in-memory bytes. Multi-file atomic visibility is not an FS primitive; partial commits are undone and reported — never claim DB-style atomicity.
 
 ## Phases
 
 ```text
-1. Plan          PatchPlan { entries, base_fingerprints }
-2. Revalidate    every path still matches base identity
-3. Prepare       temps for creates/updates; track created parents
-4. Commit        deterministic order: updates → adds → deletes
-                 (lexicographic path within each class, or single lex order)
-5. Rollback      on failure after step 4 started
-6. Cleanup       remove leftover temps; remove empty created dirs on rollback
+1. Plan         PatchPlan { entries, base_fingerprints }
+2. Revalidate   existence + blake3 vs snapshot
+3. Prepare      temps for create/update; track created parents
+4. Commit       lexicographic path order (v1; no Move)
+5. Rollback     if step 4 fails mid-way
+6. Cleanup      leftover temps; empty created dirs on rollback
 ```
 
-`--check` stops after step 1 (and in-memory apply). Zero temps, zero writes.
+`--check`: stop after in-memory plan/apply. Zero temps/writes (`CountingFs`).
 
 ## Identity
 
@@ -31,47 +28,34 @@ struct BaseIdentity {
 }
 ```
 
-Revalidation compares existence + hash. Metadata (mtime/inode) may be used as a cheap precheck later; content hash remains authoritative.
+Content hash is authoritative. Concurrent modification is not retried; caller regenerates the patch.
 
-## Commit actions
+## Actions
 
-| Plan entry | Visible mutation | Rollback |
+| Entry | Commit | Rollback |
 | --- | --- | --- |
-| Modify | rename temp → path | rewrite original bytes via temp+rename |
-| Create | rename temp → path (after mkdir parents) | unlink; rmdir created parents (empty) |
-| Remove | unlink | restore bytes via temp+rename + mode |
+| Modify | rename temp → path | restore bytes via temp+rename + mode |
+| Create | mkdir parents; rename temp → path | unlink; rmdir empty created parents |
+| Remove | unlink | restore bytes + mode |
 
-## Ordering rationale
+When `*** Move to:` lands (v1.1): write dest then remove source; rollback both; cover collisions (Codex `004_move_*`, `010_move_overwrites_*`).
 
-Without Move support, **lexicographic path order** is enough (contract). Prefer grouping updates before adds before deletes only if a future Move feature needs collision unblocking; document any change as a contract bump.
+## Failures
 
-## Failure taxonomy
-
-| Failure | Exit | Code |
+| Case | Exit | Code |
 | --- | --- | --- |
-| Hash drift / type change before commit | 5 | `CONCURRENT_MODIFICATION` |
-| Temp/write/rename/unlink I/O | 3 | `ATOMIC_COMMIT_FAILED` (after rollback attempt) |
-| Rollback incomplete | 6 | `ROLLBACK_FAILED` (list unrestored paths) |
+| Drift before commit | 5 | `CONCURRENT_MODIFICATION` |
+| Commit I/O (after rollback attempt) | 3 | `ATOMIC_COMMIT_FAILED` |
+| Incomplete rollback | 6 | `ROLLBACK_FAILED` (list paths) |
 
-Concurrent modification is **not** retried internally. Caller rereads and regenerates.
+## Upstream contrast
 
-## What OpenAI does differently
+| System | Behavior |
+| --- | --- |
+| Codex | Sequential FS apply; `AppliedPatchDelta`; `015_*leaves_changes` keeps earlier ops |
+| Agents `WorkspaceEditor` | Per-op write immediately |
+| `agent-patch` | No visible write until full plan; rollback on commit failure |
 
-Codex applies hunks sequentially to disk and records `AppliedPatchDelta`; scenario `015` expects partial success to remain. Agents `WorkspaceEditor.apply_patch` loops operations with immediate writes.
+## Fault injection
 
-We intentionally diverge: agents that need a clean tree on failure should use `agent-patch`.
-
-## Fault-injection seam
-
-All mutations go through `FileSystem` trait (`fs.rs`). Integration tests inject:
-
-- fail Nth rename
-- fail delete
-- fail temp flush
-- fail rollback write
-
-Assert: no partial intended state; no orphan temps after ordinary failures; `ROLLBACK_FAILED` lists paths when restore fails.
-
-## Check-mode invariant
-
-`CountingFs` (or equivalent) asserts zero `create_temp` / `rename` / `remove` / `create_dir_all` / `write_temp` during `--check`.
+All mutations via `FileSystem` (`fs.rs`): fail Nth rename/delete/flush/rollback. Expect clean tree or `ROLLBACK_FAILED`, no orphan temps on ordinary failures.

@@ -1,159 +1,111 @@
-# Apply Engine Design
+# Apply engine
 
-Deep module: **pure text in → pure text out**. No paths, no FS, no JSON.
+Pure text in → pure text out. No paths, FS, or JSON.
 
-Inspired by OpenAI Agents `apply_diff` / `applyDiff`, adapted to `agent-patch` uniqueness and newline rules.
+Grounded in Agents `apply_diff` / `applyDiff` and Codex `compute_replacements`, with unique-exact matching and Python-style newline preservation.
 
-## External seam
+## Seam
 
 ```rust
-/// Apply validated update hunks to a snapshot of file text.
-///
-/// - `newline` is the *output* line ending taken from the snapshot (LF or CRLF).
-/// - Matching always uses LF-normalized logical lines.
-/// - Returns Err on not-found, ambiguous, overlap, or no-effect.
 fn apply_update(
     base: &str,
     hunks: &[Hunk],
-    newline: Newline,
+    newline: Newline,      // from snapshot: Lf | CrLf
     final_newline: bool,
     bom: BomPolicy,
 ) -> Result<AppliedText, ApplyError>;
 ```
 
-Callers (planner) supply snapshot-derived newline/BOM. The engine never inspects the filesystem.
+Planner supplies newline/BOM from the snapshot. Engine never reads the disk.
 
-## Two phases (the elegant core)
+## Algorithm: locate then emit
 
-Do **not** rematch against a mutating buffer. Do what Agents/Codex do:
+Do not rematch a mutating buffer. Agents (`_apply_chunks`) and Codex (`compute_replacements` → `apply_replacements`) resolve positions on the **original** line list, then emit.
 
 ```text
-Phase A — Locate (on original lines only)
-  for each hunk in source order:
-      window ← after previous match end (forward cursor)
-      if @@ anchor present: advance window start to unique exact anchor (or fail)
-      candidates ← exact matches of hunk old-side within window…EOF
-          (optional: controlled context reduction if exactly one remains)
-      if 0 → HUNK_NOT_FOUND
-      if >1 → HUNK_AMBIGUOUS
-      record Chunk { orig_index, del_len, ins_lines }
-      advance cursor past this match
+Phase A — Locate (original lines, forward cursor)
+  for each hunk:
+      if @@ <anchor>: unique exact line for <anchor> at/after cursor, else fail
+      if *** End of File (when supported): prefer match at EOF, else search forward
+      candidates ← exact old-side matches in window
+      optional context reduction → accept only if unique
+      0 → HUNK_NOT_FOUND; >1 → HUNK_AMBIGUOUS
+      record Chunk { orig_index, del_len, ins_lines }; advance cursor
 
-Phase B — Emit (forward cursor, original array)
-  dest = []
-  cursor = 0
-  for chunk in chunks (ascending orig_index):
-      if cursor > chunk.orig_index → HUNK_OVERLAP
-      dest.extend(orig[cursor .. orig_index])
-      dest.extend(ins_lines)
-      cursor = orig_index + del_len
-  dest.extend(orig[cursor ..])
-  join with snapshot newline; restore final_newline + BOM
-  if dest == base → PATCH_NO_EFFECT
+Phase B — Emit
+  for chunk in ascending orig_index:
+      if cursor > orig_index → HUNK_OVERLAP
+      copy orig[cursor..orig_index]; append ins_lines; cursor += del_len
+  copy tail; join with snapshot newline; restore final_newline + BOM
+  if result == base → PATCH_NO_EFFECT
 ```
 
-This gives:
+## Old-side / new-side
 
-- **Locality** — matching bugs live in Phase A; emit bugs in Phase B.
-- **Overlap detection** — trivial (`cursor > orig_index`).
-- **Determinism** — no order-dependent re-search after edits.
-- **Testability** — Phase A and B unit-testable without fixtures on disk.
-
-## Hunk old-side / new-side
-
-Same as today:
-
-| Patch line | Old-side | New-side |
+| Line | Old | New |
 | --- | --- | --- |
-| ` context` | yes | yes |
-| `-old` | yes | no |
-| `+new` | no | yes |
+| ` context` | ✓ | ✓ |
+| `-old` | ✓ | |
+| `+new` | | ✓ |
 
-`del_len = old_side.len()`, `ins_lines = new_side` (owned strings).
+`del_len = old_side.len()`, `ins_lines = new_side`.
 
-Pure insertion (no `-` lines, only `+` and optional context):
+Pure `+` with context: old-side is context; match uniquely. Pure `+` with no context on a non-empty file → `HUNK_AMBIGUOUS` (Agents empty context appends at cursor — we do not). New file content uses `Add File` / create path, not Update.
 
-- With leading/trailing context: old-side is the context lines; match uniquely; insert at the change point (Agents section-chunk model).
-- With **no** context on non-empty file: **fail** `HUNK_AMBIGUOUS` (unlike Agents empty-context → append at cursor). Empty file may accept pure create-style insertion only via `Add File`, not Update.
+## `@@` anchors
 
-## `@@` anchor semantics (v1 refinement)
+- Bare `@@`: section break only.
+- `@@ <text>`: unique exact line `<text>` at/after cursor; then body match. Fail closed if 0 or >1.
+- `@@ -l,s +l,s @@`: ignore as line-number math; body still exact. (Agents may treat the whole marker string as an anchor — we do not.)
 
-Treat `@@` / `@@ <text>` as a **cursor constraint**, not as fuzzy equality:
+## Context reduction (contract)
 
-1. Bare `@@` — no anchor advance.
-2. `@@ <text>` — find **unique exact** line equal to `<text>` at or after current cursor.
-   - 0 → `HUNK_NOT_FOUND` (anchor)
-   - >1 → `HUNK_AMBIGUOUS` (anchor)
-   - 1 → set cursor to line after anchor, then match the hunk body
-3. Unified-diff style `@@ -l,s +l,s @@` — **ignored as location math** (advisory); body matching still exact. (Agents currently treat the whole marker string as an anchor line — we do not; that surprises on real files.)
+After exact full old-side is 0 or ambiguous: strip one leading context, then one trailing; never strip deletes; accept only if exactly one match remains. No edit-distance or whitespace normalization.
 
-This preserves agent prompts that teach `@@ class Foo` without importing first-match fuzz.
-
-## Context reduction (unchanged contract)
-
-Only after exact full old-side yields 0 or >1 matches:
-
-- Strip one leading context line, then one trailing, iteratively.
-- Never strip delete lines.
-- Accept only if **exactly one** match remains.
-- Never use edit-distance or whitespace normalization.
-
-## Newline and BOM
+## Newlines and BOM
 
 ```text
-detect snapshot newline: CRLF if "\r\n" in raw bytes (and no bare LF), else LF, else None
-reject Mixed on Update
-normalize logical lines: strip \r from ends for matching
-emit: join(logical_lines, snapshot_newline)
-final_newline: preserve whether base ended with newline
-BOM: if base started with U+FEFF, ensure output does too
+snapshot: CrLf if "\r\n" present without bare LF mix; else Lf; Mixed → reject on Update
+match: strip \r from logical lines (same idea as Aider _norm / Agents normalize)
+emit: join with snapshot newline; preserve final_newline; preserve leading U+FEFF
+Add File: join +lines with \n
 ```
 
-**Create (`Add File`):** join `+` payloads with `\n` (protocol lines are LF-oriented). v1.1 may add explicit CRLF create if needed.
+JS Agents `applyDiff` always joins with `\n` — prefer Python Agents policy (file wins).
 
 ## Create path
 
-Not part of `apply_update`. Planner handles Add:
+Outside `apply_update`: `join(plus_lines, "\n")` (+ trailing newline when non-empty). Same as Agents `mode="create"`.
 
-```text
-content = join(plus_lines, "\n") + trailing "\n" if any lines
-```
-
-Mirrors Agents `mode="create"` without overloading the update engine.
-
-## Error model (engine-local)
+## Errors
 
 | Condition | Code |
 | --- | --- |
-| No unique body match | `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` |
-| Bad/ambiguous anchor | same, with hint mentioning `@@` |
-| Overlapping chunks | `HUNK_OVERLAP` |
-| Identity after emit | `PATCH_NO_EFFECT` |
+| No / many body matches | `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` |
+| Bad / many anchors | same (+ `@@` hint) |
+| Overlap | `HUNK_OVERLAP` |
+| No byte change | `PATCH_NO_EFFECT` |
 
-Engine returns typed errors; diagnostics layer attaches path, indices, spans, hints.
+## Non-features (v1)
 
-## Explicit non-features
+- `diffy::apply` / `flickzeug::apply`
+- Default rstrip/strip/unicode fuzz (Codex `seek_sequence` / Agents fuzz ladder)
+- First-match-wins
+- `*** End of File` until contract enables it
 
-- No `diffy::apply`
-- No rstrip/strip/unicode passes in v1
-- No first-match-wins
-- No reading files
+## Crate map
 
-## Test plan for this module
-
-1. Port Agents examples 1–22 that don’t rely on fuzz (exact cases).
-2. Ambiguous repeated blocks → `HUNK_AMBIGUOUS`.
-3. CRLF file + LF patch → CRLF output (Python tests).
-4. Overlapping hunks → `HUNK_OVERLAP`.
-5. `@@` unique anchor + body match; duplicate anchors fail.
-6. Property: apply is deterministic; no panic on random hunk structs within limits.
-
-## Mapping in the crate
-
-| Module | Responsibility |
+| File | Role |
 | --- | --- |
-| `engine/matcher.rs` | Phase A locator (`find_unique_match`) |
-| `engine/apply.rs` | Apply orchestration and line join/split |
-| `engine/diff_summary.rs` | Observational line counts via `similar` |
+| `engine/matcher.rs` | Unique exact match + context reduction (`find_unique_match`) |
+| `engine/locate.rs` | Phase A: `locate_chunks` on original lines (forward cursor, `@@` anchors) |
+| `engine/emit.rs` | Phase B: `emit_chunks` forward cursor join |
+| `engine/apply.rs` | `apply_update` orchestration, split/join, newline detect |
+| `engine/diff_summary.rs` | `similar` line counts |
 
-Target structure for the locate-all → cursor-emit refactor: `engine/locate.rs` + `engine/emit.rs` behind the same `apply_update` seam.
+## Tests worth porting
+
+- Agents exact examples (skip fuzz-dependent cases): `openai-agents-js/.../applyDiff.test.ts`
+- CRLF file + LF patch → CRLF out: Agents Python `test_apply_diff.py`
+- Ambiguity / overlap / unique `@@` anchor
+- Codex scenarios that assume exact context (not overwrite-Add / partial-commit)

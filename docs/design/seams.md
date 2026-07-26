@@ -1,90 +1,44 @@
-# Seams and Deep Modules
+# Seams
 
-Vocabulary: **module**, **interface**, **seam**, **adapter**, **depth** (see codebase-design skill).
-
-## External seams (stable)
+## External
 
 ```text
-                    ┌──────────────────┐
-   agents / CI ───► │ CLI binary       │  small: flags + exit + JSON|human
-                    └────────┬─────────┘
-                             │ AppConfig → AppOutput
-                    ┌────────▼─────────┐
-                    │ app::run         │  orchestration only
-                    └────────┬─────────┘
-           ┌─────────────────┼──────────────────┐
-           ▼                 ▼                  ▼
-    parse_patch        path + snapshot      apply_update
-    (protocol)         (policy)             (engine)
-           │                 │                  │
-           └────────────┬────┴──────────────────┘
-                        ▼
-                   commit_plan (fs adapter)
+agents/CI → CLI → app::run
+                    ├─ parse_patch
+                    ├─ path + snapshot
+                    ├─ apply_update
+                    └─ commit_plan(fs)
 ```
 
-### 1. `parse_patch(text) -> PatchDocument`
+| Seam | Depth | Tests |
+| --- | --- | --- |
+| `parse_patch` | Grammar + spans | Malformed corpus; no tempdir |
+| `apply_update` | Locate + emit + newlines | String fixtures |
+| `commit_plan` | Revalidate + temps + rollback | Tempdirs + fault `FileSystem` |
+| `app::run` | Wire + public errors/exits | `assert_cmd`; `scripts/dogfood` |
 
-- **Depth:** full grammar, spans, lenient-vs-strict choices hidden.
-- **Tests:** malformed corpus; never needs a tempdir.
+## Adapters
 
-### 2. `apply_update(base, hunks, newline, …) -> AppliedText`
-
-- **Depth:** locate + emit + newline/BOM rules.
-- **Tests:** string fixtures only (Agents examples, ambiguity, CRLF).
-
-### 3. `commit_plan(fs, plan, limits) -> CommitResult`
-
-- **Depth:** revalidate, temps, rename, rollback.
-- **Tests:** real tempdirs + fault-injecting `FileSystem` adapter.
-
-### 4. `app::run(config) -> AppOutput`
-
-- **Depth:** wires the above; maps errors to public codes/exits.
-- **Tests:** CLI integration (`assert_cmd`); dogfood script.
-
-## Real seams (two adapters)
-
-| Seam | Production adapter | Test adapter |
+| Seam | Prod | Test |
 | --- | --- | --- |
 | `FileSystem` | `RealFileSystem` | `CountingFs`, fault injector |
-| (future) `HunkLocator` | exact unique | optional fuzzy unique |
 
-Do **not** introduce a `diffy` adapter seam — research showed it is the wrong dialect. Observation stays on `similar` behind a tiny `diff_summary` helper (one adapter is enough; no trait required until a second summary backend appears).
+No `diffy`/`flickzeug` apply adapter — wrong dialect (unified diff). `similar` stays a private helper in `diff_summary.rs` until a second summary backend appears.
 
-## Internal seams (private)
+Optional later: `HunkLocator` (exact unique vs explicit fuzzy unique) — only when `--fuzzy` exists.
 
-Inside the apply engine:
+## Internal (private)
 
-- `locate_chunks(lines, hunks) -> Vec<Chunk>`
-- `emit_chunks(lines, chunks, newline) -> String`
+Engine: `locate_chunks`, `emit_chunks`.  
+Commit: `revalidate`, `prepare_temps`, `commit_entries`, `rollback`.
 
-Inside commit:
+## Layout
 
-- `revalidate`
-- `prepare_temps`
-- `commit_entries`
-- `rollback`
+`crates/agent-patch/src/` — one concern per file. Prefer `engine/{locate,emit}.rs` over growing CLI/match logic in `app.rs`.
 
-Callers outside the module must not see these.
+## Avoid
 
-## Deletion test
-
-| If we deleted… | Complexity reappears in… |
-| --- | --- |
-| Protocol parser | every caller invents Begin/End parsing |
-| Apply engine | CLI and commit would reimplement matching |
-| Commit coordinator | partial writes and races leak into app |
-| Path policy | symlink escape bugs scatter |
-
-Each pays rent.
-
-## AI-navigable layout
-
-Keep one concern per file under `crates/agent-patch/src/` as in the implementation plan. Prefer growing `engine/{locate,emit}.rs` over stuffing CLI with match logic.
-
-## Anti-patterns to avoid
-
-- Passing `diffy::Patch` through the apply path “because Codex depends on diffy” (it doesn’t, for apply).
-- Matching inside `commit.rs`.
-- Writing files inside `apply_update`.
-- Expanding CLI flags for matcher algorithm knobs in v1 (contract forbids).
+- Matching inside `commit.rs` or writing files inside `apply_update`
+- Public matcher knobs in v1 CLI
+- Treating workspace `diffy` / `flickzeug` as the V4A engine
+- Path-policy logic duplicated outside `path_policy.rs`
