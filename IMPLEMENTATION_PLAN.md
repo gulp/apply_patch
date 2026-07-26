@@ -1,11 +1,13 @@
 # `agent-patch` — Implementation Plan
 
-Status: Greenfield implementation plan
+Status: Active post-v1 plan (agent reliability, recovery, and verification)
+Supersedes: [docs/archive/2026-07-greenfield-implementation-plan.md](docs/archive/2026-07-greenfield-implementation-plan.md)
+Authoritative behavior today: [README.md](README.md), [docs/contract-v1.md](docs/contract-v1.md), [docs/protocol.md](docs/protocol.md), [docs/design/](docs/design/)
 Primary users: Coding agents operating through shell-capable harnesses
-Primary interface: Repo-local command-line executable
+Primary interface: Repo-local command-line executable (`scripts/agent-patch`; optional PATH via direnv / `cargo install`)
 Implementation language: Rust
 Initial platforms: Linux and macOS
-Primary objective: Apply localized code changes safely without rewriting entire files
+Primary objective: Keep fail-closed V4A apply, and make agent recovery, verification, and multi-agent safety first-class
 
 ---
 
@@ -13,103 +15,61 @@ Primary objective: Apply localized code changes safely without rewriting entire 
 
 ### 1.1 Goals
 
-1. Provide a deterministic, non-interactive CLI that coding agents can use to apply localized edits to repository files.
+1. Preserve the v1 contract: unique-exact locate→emit, transactional commit, root confinement, stable exits/JSON, no silent fuzzy default.
 
-2. Support a model-legible patch protocol with explicit operations:
-   - add file;
-   - update file;
-   - delete file;
-   - move or rename file, if included in the initial contract;
-   - apply multiple file operations atomically.
+2. Make every apply failure **actionable for an agent** without human intervention:
+   - candidate locations and excerpts;
+   - draft repair patches where safe;
+   - explicit next-action hints tied to `ErrorCode`.
 
-3. Preserve all unaffected file content exactly.
+3. Support **verify-gated commit**: apply to a shadow tree, run a user command, promote only on success.
 
-4. Reject malformed, ambiguous, stale, unsafe, or partially applicable patches before mutating the working tree.
+4. Emit **apply receipts** and support transactional **revert** from a receipt.
 
-5. Make every failure actionable through:
-   - stable exit codes;
-   - machine-readable error codes;
-   - concise human-readable diagnostics;
-   - explicit next-action hints.
+5. Support optional **content-hash pins** on patch targets so parallel agents fail closed on stale bases before hunk matching.
 
-6. Ensure a patch either:
-   - applies completely; or
-   - makes no filesystem changes.
+6. Support **idempotent / already-applied** detection as an explicit success mode (not silent no-op confusion with `PATCH_NO_EFFECT`).
 
-7. Allow coding agents to invoke the tool through ordinary shell execution without MCP registration or harness-specific tool integration.
+7. Offer **unique-only** opt-in fuzz (`rstrip` / `strip`) that never selects first-match-wins.
 
-8. Support both:
-   - patch text supplied over standard input;
-   - patch text supplied through a file path.
+8. Detect **wrong-match risk** (thin context / near-miss twins) and refuse or warn before commit.
 
-9. Provide a validation-only mode that performs all parsing, safety checks, and in-memory application without writing files.
+9. Provide structured **`--plan`** output (locate results + diffs) without writing the tree.
 
-10. Detect concurrent modification between validation and commit.
+10. Ship **`doctor`** for PATH, direnv, and release-binary freshness footguns.
 
-11. Preserve:
+11. Keep invocation agent-friendly:
+    - `scripts/agent-patch` canonical;
+    - bare `agent-patch` when `scripts/` is on `PATH`;
+    - no MCP requirement.
 
-- line-ending style;
-- final-newline state;
-- file permissions where supported;
-- unaffected bytes;
-- path casing and repository-relative path identity.
+12. Extend the dialect only via explicit contract bumps (`docs/contract-v1.md` or a successor).
 
-12. Produce machine-pure output suitable for coding-agent harnesses.
+13. Keep Move File out of default path until [docs/design/move.md](docs/design/move.md) is implemented under a contract bump.
 
-13. Keep the protocol and observable behavior stable enough that multiple coding agents can generate patches independently against the same contract.
-
-14. Provide repository-local installation and invocation:
-
-```bash
-scripts/agent-patch
-```
-
-15. Make incorrect operation types impossible or explicit:
-
-- `Add File` must target a missing path;
-- `Update File` must target an existing regular file;
-- `Delete File` must target an existing file;
-- unsafe paths must be rejected.
+14. Keep dogfood fixtures and Codex scenario subsets green on Linux and macOS CI.
 
 ### 1.2 Non-goals
 
-1. `agent-patch` is not a general-purpose text editor.
+1. Not a general-purpose editor, AST refactor engine, or NL→patch generator.
 
-2. It will not perform semantic code transformations using ASTs or language servers.
+2. Not silent fuzzy first-match, whole-file rewrite recovery, or `diffy`/`flickzeug` as V4A apply backends.
 
-3. It will not infer the user’s intended change.
+3. Not automatic semantic merge resolution.
 
-4. It will not generate patches from natural-language instructions.
+4. Not Git stage/commit/PR creation (hooks that *call* verify commands are allowed; Git ownership is not).
 
-5. It will not silently fall back to:
-   - full-file rewrites;
-   - fuzzy nearest-match selection;
-   - whitespace-insensitive matching;
-   - line-number-only matching;
-   - external `patch` or `git apply`;
-   - three-way merge without explicit base data.
+5. Not interactive TUIs or conflict UIs.
 
-6. It will not automatically resolve semantic merge conflicts.
+6. Not binary-file patching or arbitrary encodings beyond UTF-8 (+ BOM preserve).
 
-7. It will not invoke formatters, compilers, linters, or tests.
+7. Not streaming multi-MiB patch parse unless a concrete harness requires it.
 
-8. It will not stage files in Git.
+8. Not a Responses API server; optional JSON op bridge may wrap envelopes later without replacing them.
 
-9. It will not create commits, branches, or pull requests.
+9. Not overwriting Add or Move-dest collision (deliberate stricter delta vs Codex).
 
-10. It will not modify files outside the configured root.
-
-11. It will not follow symbolic links outside the configured root.
-
-12. It will not modify binary files in v1.
-
-13. It will not support arbitrary encodings in v1. Initial support is UTF-8 text with optional UTF-8 BOM handling.
-
-14. It will not support interactive conflict resolution.
-
-15. It will not expose backend-specific concepts such as `diffy` fuzz parameters or `similar` algorithm selection through the public CLI in v1.
-
-16. It will not promise compatibility with arbitrary unified-diff dialects unless explicitly included in the protocol contract.
+10. Not default `--fuzzy`; uniqueness remains mandatory at every fuzz level.
 
 ---
 
@@ -119,92 +79,50 @@ scripts/agent-patch
 
 `agent-patch`
 
-A repo-local Rust CLI that allows coding agents to apply structured, localized, transactional file changes using a deterministic patch protocol.
+A repo-local Rust CLI that applies structured, localized, transactional V4A-family patches for coding agents—with verification, recoverable failures, and multi-agent freshness controls.
 
 ### 2.2 Users
 
-Primary users:
+Primary:
 
-- Claude Code agents;
-- Codex-style coding agents;
-- shell-capable autonomous development agents;
-- human developers reviewing or replaying agent-generated patches;
-- CI systems validating generated patches.
+- Claude Code / Cursor / Codex-style agents;
+- shell-capable autonomous coding agents;
+- humans replaying or reviewing agent patches;
+- CI validating patches (`--check`, `--plan`, `--verify`).
 
-Secondary users:
+Secondary:
 
-- agent harness authors;
-- repository maintainers;
-- multi-agent orchestration systems;
-- code-review automation.
+- harness authors;
+- multi-agent orchestrators;
+- maintainers dogfooding via `fixtures/dogfood` and `scripts/dogfood`.
 
 ### 2.3 Problem statement
 
-Coding agents frequently rewrite entire files to make localized changes. Whole-file replacement creates unnecessary risk:
+v1 solves whole-file rewrite risk with fail-closed unique-exact apply. Agents still lose time when:
 
-- accidental removal of unrelated edits;
-- formatting churn;
-- stale-content overwrite;
-- loss of comments or whitespace;
-- merge conflicts;
-- poor reviewability;
-- excessive output tokens;
-- inability to distinguish intended from incidental changes;
-- difficult recovery when concurrent edits occur.
+- failures do not include enough context to regenerate a patch;
+- “unique” matches the wrong near-duplicate;
+- apply succeeds but breaks the build;
+- retries re-apply and confuse `PATCH_NO_EFFECT` with success;
+- parallel agents race without content pins;
+- stale `target/release` binaries silently run old code.
 
-Existing exact string-replacement tools work well for simple, unique replacements but become awkward for:
-
-- multi-hunk edits;
-- additions and removals around stable context;
-- coherent changes across several files;
-- user-supplied patches;
-- transactional application;
-- stale line numbers with otherwise valid surrounding context.
-
-`agent-patch` provides a strict localized-edit runtime with explicit validation, contextual matching, atomic commit, and stable diagnostics.
+This plan addresses those gaps without abandoning fail-closed semantics.
 
 ### 2.4 Constraints
 
-The implementation must be:
-
-- deterministic;
-- non-interactive;
-- offline;
-- repo-local;
-- safe by default;
-- cross-platform across Linux and macOS;
-- suitable for invocation through `Bash`;
-- independent of Claude Code, Codex, MCP, or any single harness;
-- machine-readable;
-- idempotence-aware;
-- atomic across all paths in one patch;
-- resistant to path traversal and symlink escape;
-- robust under concurrent file modification;
-- bounded in memory and execution time;
-- explicit about unsupported input;
-- free of silent fallback behavior.
+- Contract-first: bump docs before behavior.
+- Pure engine: locate/emit stay FS-free.
+- Commit stays all-or-nothing with rollback.
+- JSON remains versioned and machine-pure.
+- Complexity budget: prefer features that reuse `locate_chunks`, `emit_chunks`, `commit_plan`, and `PublicError`.
 
 ### 2.5 Environment
 
-Initial stack:
-
-- Rust stable;
-- Cargo workspace;
-- `clap` for CLI parsing;
-- `serde` and `serde_json` for structured output;
-- `similar` for resulting-diff computation and diagnostics;
-- `diffy` or a maintained equivalent such as `flickzeug` for contextual hunk application where its semantics match the project contract;
-- `thiserror` for typed internal errors;
-- `tempfile` for safe temporary files;
-- `sha2` or `blake3` for content fingerprints;
-- `camino` or standard `PathBuf` with strict normalization helpers;
-- `fs2` or platform-specific locking only if required by the finalized concurrency design;
-- `proptest` for parser and path-safety property tests;
-- `assert_cmd` and `predicates` for CLI integration tests;
-- `insta` optionally for stable diagnostic snapshots;
-- GitHub Actions for Linux and macOS validation.
-
-No runtime service, database, network access, daemon, or configuration server is required.
+- Linux and macOS (CI matrix).
+- Rust stable workspace under `crates/agent-patch`.
+- Invocation: `scripts/agent-patch` (release → debug → `cargo run`); optional `PATH_add scripts` via `.envrc`.
+- Dogfood tree: `fixtures/dogfood` (never required for production use).
 
 ---
 
@@ -212,228 +130,88 @@ No runtime service, database, network access, daemon, or configuration server is
 
 ### 3.1 Canonical invocation
 
-Read a patch from standard input:
-
 ```bash
-scripts/agent-patch <<'PATCH'
-*** Begin Patch
-*** Update File: src/config.rs
-@@
- pub const RETRIES: usize = 2;
--pub const TIMEOUT_SECS: u64 = 30;
-+pub const TIMEOUT_SECS: u64 = 45;
-*** End Patch
-PATCH
-```
-
-Validate without writing:
-
-```bash
-scripts/agent-patch --check < /tmp/change.patch
-```
-
-Read from a patch file:
-
-```bash
-scripts/agent-patch /tmp/change.patch
-```
-
-Emit JSON:
-
-```bash
-scripts/agent-patch --json < /tmp/change.patch
-```
-
-Constrain the root explicitly:
-
-```bash
-scripts/agent-patch --root "$PWD" < /tmp/change.patch
-```
-
-### 3.2 Initial command surface
-
-```text
+scripts/agent-patch [OPTIONS] [PATCH_FILE]
+# or, with scripts/ on PATH:
 agent-patch [OPTIONS] [PATCH_FILE]
 ```
 
-Options:
+### 3.2 Command surface (v1 + planned)
+
+Existing:
+
+| Flag / arg | Role |
+| --- | --- |
+| `PATCH_FILE` / stdin | Patch input |
+| `--check` | Validate + in-memory apply; no writes |
+| `--root` | Repository root |
+| `--json` | Single JSON object on stdout |
+| `--quiet` | Suppress human success summary |
+| `--max-files` / `--max-patch-bytes` / `--max-file-bytes` | Limits |
+
+Planned (contract bump required where noted):
+
+| Flag / subcommand | Role | Contract |
+| --- | --- | --- |
+| `--plan` | Locate→emit preview + structured diffs; no writes | Additive CLI |
+| `--verify <CMD>` | Shadow apply; run command; promote on exit 0 | Additive; document shadow semantics |
+| `--receipt <PATH>` | Write apply receipt after success | Additive |
+| `--revert <RECEIPT>` | Transactional undo from receipt | Additive |
+| `--fuzzy <off\|rstrip\|strip>` | Unique-only fuzz ladder; default `off` | Contract bump for matching |
+| `--risk <off\|warn\|refuse>` | Thin-context / near-miss gate | Additive policy |
+| `--idempotent` | Treat already-applied as success | Contract bump for success modes |
+| `doctor` | Env / PATH / binary freshness | Additive |
+| `translate` | V4A ↔ unified (optional phase) | Additive; not apply path |
+
+### 3.3 Protocol (baseline)
+
+Frozen in [docs/protocol.md](docs/protocol.md):
+
+- Envelope `*** Begin Patch` … `*** End Patch`
+- `Add File` / `Update File` / `Delete File`
+- `@@` / `@@ <anchor>`; optional `*** End of File`
+- Unique exact locate→emit; EOF-prefer when marked
+- Move deferred ([docs/design/move.md](docs/design/move.md))
+
+Planned protocol extensions (explicit bump):
 
 ```text
---check
---root <PATH>
---json
---quiet
---max-files <N>
---max-patch-bytes <N>
---max-file-bytes <N>
---version
---help
+*** Hash: blake3 <hex>     # optional per-file pin before hunks / after Update header
 ```
 
-Default behavior:
+Exact grammar to freeze in Phase 0 of this plan.
 
-- read patch from `PATCH_FILE` when provided;
-- otherwise read patch from standard input;
-- resolve root from `--root`, otherwise current working directory;
-- parse entire patch;
-- validate every operation;
-- load every affected file;
-- apply every operation in memory;
-- revalidate current file fingerprints;
-- commit all writes;
-- print concise success output;
-- return exit code `0`.
+### 3.4 Matching contract (baseline + deltas)
 
-### 3.3 Protocol
+Baseline: [docs/contract-v1.md](docs/contract-v1.md).
 
-Canonical envelope:
+Deltas under bump:
 
-```text
-*** Begin Patch
-<one or more file operations>
-*** End Patch
-```
+1. `--fuzzy=rstrip|strip`: normalize for search only; accept only if **exactly one** match.
+2. Risk gate: if accepted match has near-miss siblings under reduced context, `warn` or `refuse`.
+3. Idempotent: if old-side absent and new-side present at expected locus, success with `already_applied`.
 
-Supported operations:
+### 3.5 Stdout / stderr
 
-```text
-*** Add File: path/to/file
-+line one
-+line two
-```
+Unchanged philosophy:
 
-```text
-*** Update File: path/to/file
-@@
- context
--old
-+new
- context
-```
+- human mode: summary stdout, diagnostics stderr;
+- `--json`: one object stdout; stderr empty for structured failures.
 
-```text
-*** Delete File: path/to/file
-```
+### 3.6 Exit taxonomy
 
-Optional rename support, only if implemented as part of v1:
+Keep exits 0–7. Planned additive meanings stay within classes:
 
-```text
-*** Move File: old/path
-*** To: new/path
-```
-
-Recommendation: defer move support until v1.1 unless required by a concrete agent workflow. Move semantics complicate path-collision, permissions, rollback, and cross-device guarantees.
-
-### 3.4 Patch grammar constraints
-
-1. Exactly one `*** Begin Patch` line.
-2. Exactly one `*** End Patch` line.
-3. No non-whitespace content outside the envelope.
-4. Every operation begins with a recognized operation header.
-5. Paths are repository-relative UTF-8 paths.
-6. Absolute paths are forbidden.
-7. `.` and `..` components are forbidden after normalization.
-8. Empty paths are forbidden.
-9. NUL bytes are forbidden.
-10. Duplicate operations on the same path are forbidden in v1.
-11. A patch must contain at least one operation.
-12. Update hunks must contain at least one addition or deletion.
-13. Empty no-op hunks are forbidden.
-14. Patch size and file-count limits are enforced before loading target files.
-15. Unknown headers or directives are hard errors.
-
-### 3.5 Hunk matching contract
-
-The matching algorithm must be deterministic and documented.
-
-Required matching order:
-
-1. Exact full hunk-context match.
-2. Exact match after ignoring only the hunk’s advisory location metadata, if any.
-3. Optional controlled edge-context reduction if this is part of the chosen protocol:
-   - remove one leading context line;
-   - then one trailing context line;
-   - stop at the configured minimum;
-   - accept only a unique remaining match.
-
-4. If zero matches remain, fail with `HUNK_NOT_FOUND`.
-5. If more than one match remains, fail with `HUNK_AMBIGUOUS`.
-
-Forbidden matching behavior:
-
-- edit distance ranking;
-- semantic similarity;
-- whitespace normalization;
-- tab/space equivalence;
-- case-insensitive matching;
-- nearest line-number selection;
-- first-match-wins under ambiguity.
-
-Any whitespace-tolerant mode must be a future explicit flag and must never become the default.
-
-### 3.6 Standard output and standard error
-
-Default human mode:
-
-- stdout: concise success summary only;
-- stderr: diagnostics, warnings, and errors.
-
-JSON mode:
-
-- stdout: exactly one JSON object;
-- stderr: reserved for process-level failures that prevent structured output, ideally empty.
-
-No ANSI color in JSON mode.
-
-No progress spinners.
-
-No prompts.
-
-No interactive confirmation.
-
-### 3.7 Exit taxonomy
-
-```text
-0  success
-1  patch does not apply to current content
-2  malformed or unsupported patch
-3  filesystem or I/O failure
-4  unsafe path or policy violation
-5  concurrent modification detected
-6  internal invariant violation
-7  configured resource limit exceeded
-```
-
-Exit codes are stable public API.
-
-Internal error codes are more granular than exit codes.
-
-Examples:
-
-```text
-PATCH_MISSING_BEGIN
-PATCH_MISSING_END
-PATCH_EMPTY
-UNKNOWN_OPERATION
-INVALID_PATH
-PATH_OUTSIDE_ROOT
-SYMLINK_ESCAPE
-FILE_ALREADY_EXISTS
-FILE_NOT_FOUND
-NOT_REGULAR_FILE
-BINARY_FILE_UNSUPPORTED
-INVALID_UTF8
-HUNK_NOT_FOUND
-HUNK_AMBIGUOUS
-HUNK_OVERLAP
-PATCH_NO_EFFECT
-CONCURRENT_MODIFICATION
-ATOMIC_COMMIT_FAILED
-ROLLBACK_FAILED
-LIMIT_PATCH_BYTES
-LIMIT_FILE_BYTES
-LIMIT_FILE_COUNT
-```
+| Code | Class | Notes |
+| --- | --- | --- |
+| 0 | success | includes idempotent already-applied when enabled |
+| 1 | does not apply | hunk / risk-refuse / verify-cmd failed after clean shadow discard |
+| 2 | malformed / unsupported | |
+| 3 | I/O | |
+| 4 | path policy | |
+| 5 | concurrent / hash pin mismatch | |
+| 6 | internal / rollback / revert failed | |
+| 7 | limits | |
 
 ---
 
@@ -442,801 +220,248 @@ LIMIT_FILE_COUNT
 ### 4.1 Layered architecture
 
 ```text
-CLI adapter
-    ↓
-Application service
-    ↓
-Protocol parser
-    ↓
-Validation and policy layer
-    ↓
-Filesystem snapshot loader
-    ↓
-Patch planner
-    ↓
-In-memory patch engine
-    ↓
-Commit coordinator
-    ↓
-Filesystem adapter
-```
-
-Supporting cross-cutting components:
-
-```text
-Diagnostics
-Structured output
-Hashing
-Instrumentation
-Limits
-Path safety
-Testing fixtures
+CLI (clap)
+  → app::run
+       ├─ doctor | translate | revert   (optional entrypoints)
+       ├─ parse_patch (+ optional hash pins)
+       ├─ path policy + snapshot
+       ├─ validate + plan
+       ├─ risk / fuzzy / idempotent (pure)
+       ├─ apply_update (locate_chunks → emit_chunks)
+       ├─ --check / --plan → emit and stop
+       ├─ --verify → shadow FS → command → promote or discard
+       └─ commit_plan → receipt
 ```
 
 ### 4.2 Components
 
 #### 4.2.1 CLI adapter
 
-Responsibilities:
+Parse flags/subcommands; enforce mutually exclusive modes (`--check` vs `--verify` vs `--revert`).
 
-- parse arguments;
-- determine input source;
-- resolve root;
-- construct application configuration;
-- invoke application service;
-- map typed result to:
-  - stdout;
-  - stderr;
-  - exit code.
+#### 4.2.2 Protocol parser
 
-Must not:
-
-- parse the patch protocol;
-- mutate files;
-- contain patch logic;
-- guess recovery behavior.
+Existing AST + EOF + anchors. Extend for optional hash pins.
 
-Suggested module:
+#### 4.2.3 Path policy / snapshot / validate / plan
 
-```text
-src/cli.rs
-```
+Unchanged seams; snapshot gains fields needed for idempotent detection and risk.
 
-#### 4.2.2 Input reader
+#### 4.2.4 Engine
 
-Responsibilities:
+`matcher` / `locate` / `emit` / `apply` / `diff_summary`. Fuzzy and risk are locate-time policies.
 
-- read patch bytes from stdin or file;
-- enforce maximum patch size during streaming;
-- reject simultaneous unsupported input combinations;
-- preserve input bytes for diagnostics where safe.
+#### 4.2.5 Shadow filesystem
 
-Suggested module:
+New adapter implementing the same `FileSystem` trait over a temp root mirroring relative paths.
 
-```text
-src/input.rs
-```
+#### 4.2.6 Verify runner
 
-#### 4.2.3 Protocol parser
+Spawn user command with `cwd=shadow` or `cwd=real` + env pointing at shadow—**Phase 0 decision**. Default recommendation: `cwd` = shadow root so tools see the candidate tree.
 
-Responsibilities:
+#### 4.2.7 Receipt store
 
-- tokenize and parse the patch envelope;
-- parse file operations;
-- parse hunks;
-- retain source spans for diagnostics;
-- reject unsupported syntax;
-- produce an immutable typed AST.
+Serialize plan + before/after hashes + inverse ops; load for revert.
 
-Suggested modules:
+#### 4.2.8 Diagnostics
 
-```text
-src/protocol/mod.rs
-src/protocol/lexer.rs
-src/protocol/parser.rs
-src/protocol/ast.rs
-```
-
-Output model:
-
-```rust
-struct PatchDocument {
-    operations: Vec<FileOperation>,
-}
-
-enum FileOperation {
-    Add(AddFile),
-    Update(UpdateFile),
-    Delete(DeleteFile),
-}
+Extend JSON error objects with `candidates`, `excerpts`, optional `repair_patch`.
 
-struct AddFile {
-    path: RepoPath,
-    content: String,
-}
-
-struct UpdateFile {
-    path: RepoPath,
-    hunks: Vec<Hunk>,
-}
+#### 4.2.9 Doctor
 
-struct DeleteFile {
-    path: RepoPath,
-}
-
-struct Hunk {
-    old_lines: Vec<HunkLine>,
-    new_lines: Vec<HunkLine>,
-    source_span: SourceSpan,
-}
-```
-
-The exact representation may differ, but operation identity and source-location diagnostics must remain explicit.
-
-#### 4.2.4 Path policy
-
-Responsibilities:
-
-- parse repository-relative paths;
-- reject unsafe components;
-- canonicalize the root;
-- securely resolve parent directories;
-- detect symlink escape;
-- prohibit writes outside root;
-- enforce per-path policy;
-- reject directories when regular files are required.
-
-Suggested module:
-
-```text
-src/path_policy.rs
-```
-
-All filesystem operations must accept `RepoPath`, not arbitrary `PathBuf`, after validation.
-
-#### 4.2.5 Snapshot loader
-
-Responsibilities:
-
-- load metadata and bytes for every target;
-- detect regular file, missing path, directory, or symlink;
-- compute content fingerprint;
-- record permissions and newline metadata;
-- enforce file-size limits;
-- detect binary or invalid UTF-8 content;
-- construct immutable snapshots.
-
-Suggested module:
-
-```text
-src/snapshot.rs
-```
-
-Model:
-
-```rust
-struct FileSnapshot {
-    path: RepoPath,
-    state: FileState,
-}
-
-enum FileState {
-    Missing,
-    Present(PresentFile),
-}
-
-struct PresentFile {
-    bytes: Vec<u8>,
-    text: String,
-    fingerprint: ContentFingerprint,
-    permissions: FilePermissions,
-    newline_style: NewlineStyle,
-    final_newline: bool,
-    metadata_identity: MetadataIdentity,
-}
-```
-
-#### 4.2.6 Semantic validator
-
-Responsibilities:
-
-- ensure operation/path state compatibility;
-- reject duplicate paths;
-- reject unsupported files;
-- ensure update hunks are structurally valid;
-- ensure operation count and byte limits;
-- identify no-op patches.
-
-Suggested module:
-
-```text
-src/validate.rs
-```
-
-#### 4.2.7 Patch planner
-
-Responsibilities:
-
-- pair every operation with its snapshot;
-- produce an ordered mutation plan;
-- detect path collisions;
-- calculate intended final state;
-- separate read phase from write phase;
-- prepare commit metadata.
-
-Suggested module:
-
-```text
-src/plan.rs
-```
-
-Model:
-
-```rust
-struct PatchPlan {
-    root: CanonicalRoot,
-    entries: Vec<PlannedChange>,
-    base_fingerprints: BTreeMap<RepoPath, Option<ContentFingerprint>>,
-}
-
-enum PlannedChange {
-    Create(PlannedCreate),
-    Modify(PlannedModify),
-    Remove(PlannedRemove),
-}
-```
-
-#### 4.2.8 Patch engine
-
-Responsibilities:
-
-- apply update hunks entirely in memory;
-- enforce deterministic matching;
-- reject ambiguous matches;
-- detect overlapping hunk effects;
-- preserve unaffected content;
-- produce proposed final bytes;
-- calculate per-file diff summaries using `similar`;
-- return no filesystem side effects.
-
-Suggested modules:
-
-```text
-src/engine/mod.rs
-src/engine/matcher.rs
-src/engine/apply.rs
-src/engine/diff_summary.rs
-```
-
-The engine may use `diffy` or `flickzeug`, but only behind a project-defined adapter.
-
-The project contract must not inherit undocumented backend behavior accidentally.
-
-Define an internal trait:
-
-```rust
-trait HunkApplier {
-    fn apply(
-        &self,
-        base: &str,
-        hunks: &[Hunk],
-    ) -> Result<AppliedText, PatchApplyError>;
-}
-```
-
-Provide contract tests independent of the backend implementation.
-
-#### 4.2.9 Commit coordinator
-
-Responsibilities:
-
-- re-read or re-stat affected paths immediately before commit;
-- compare current state with base fingerprints;
-- abort on concurrent modification;
-- prepare temporary files;
-- fsync temp files where configured;
-- commit mutations in a deterministic order;
-- rollback already-committed changes on later failure;
-- report rollback failure distinctly;
-- ensure `--check` bypasses all write operations.
-
-Suggested module:
-
-```text
-src/commit.rs
-```
-
-This is the highest-risk component and must have dedicated integration and fault-injection tests.
-
-#### 4.2.10 Filesystem adapter
-
-Responsibilities:
-
-- abstract filesystem reads, metadata, temp creation, rename, deletion, chmod, sync;
-- support real and fault-injected implementations;
-- avoid direct `std::fs` use outside this layer.
-
-Suggested module:
-
-```text
-src/fs.rs
-```
-
-Trait sketch:
-
-```rust
-trait FileSystem {
-    fn read(&self, path: &Path) -> Result<Vec<u8>, FsError>;
-    fn metadata(&self, path: &Path) -> Result<FileMetadata, FsError>;
-    fn symlink_metadata(&self, path: &Path) -> Result<FileMetadata, FsError>;
-    fn create_temp_near(&self, path: &Path) -> Result<TempFile, FsError>;
-    fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError>;
-    fn remove_file(&self, path: &Path) -> Result<(), FsError>;
-    fn set_permissions(&self, path: &Path, permissions: FilePermissions)
-        -> Result<(), FsError>;
-    fn sync_file(&self, path: &Path) -> Result<(), FsError>;
-    fn sync_dir(&self, path: &Path) -> Result<(), FsError>;
-}
-```
-
-#### 4.2.11 Diagnostics
-
-Responsibilities:
-
-- convert typed failures into stable public diagnostics;
-- include operation index, path, hunk index, and source span;
-- produce human and JSON representations;
-- include one precise next-action hint;
-- avoid stack traces unless explicitly enabled for development.
-
-Suggested module:
-
-```text
-src/diagnostics.rs
-```
-
-#### 4.2.12 Instrumentation
-
-Responsibilities:
-
-- collect operation counts and timings;
-- collect no sensitive content by default;
-- support structured diagnostic events;
-- expose development tracing through an environment variable;
-- keep default output clean.
-
-Suggested module:
-
-```text
-src/telemetry.rs
-```
+Read mtimes of `src/**` vs `target/release/agent-patch`; check `command -v agent-patch`; print remediation.
 
 ### 4.3 Boundary rules
 
-1. CLI code may depend on application services, never the reverse.
-
-2. Protocol parsing may not access the filesystem.
-
-3. The patch engine may not perform filesystem writes.
-
-4. Filesystem code may not interpret patch syntax.
-
-5. Commit coordination may only receive a fully validated, fully applied plan.
-
-6. No component may silently convert one operation type into another.
-
-7. Backends such as `diffy` and `similar` remain behind adapters.
-
-8. Public error codes may not expose crate-specific error strings.
-
-9. Path safety must be centralized; no component may independently join untrusted strings to the root.
-
-10. All file mutations flow through the commit coordinator.
+- Engine never runs verify commands.
+- Commit never fuzzy-matches.
+- Repair patches are suggestions only; never auto-applied.
+- Shadow trees are deleted on success promote and on failure (optional `--keep-shadow` later).
 
 ---
 
 ## 5. Core Invariants
 
-### I1 — Root confinement
+Carry forward v1 invariants I1–I18 (root confinement, transactionality, no mutation before validation, no silent fallback, unique matching, …) from the archived plan and [docs/design/overview.md](docs/design/overview.md).
 
-Every read and write path resolves beneath the configured root.
+### I19 — Verify before promote
 
-### I2 — Transactionality
+`--verify` never mutates the real root unless the verify command exits 0 and revalidation still passes.
 
-A patch either commits all file operations or leaves the repository in its original state.
+### I20 — Receipt fidelity
 
-### I3 — No mutation before validation
+Revert applies the inverse of a successful receipt or fails closed with no partial undo.
 
-No target file is modified until the complete patch has been parsed, validated, loaded, and applied in memory.
+### I21 — Fuzzy uniqueness
 
-### I4 — No silent fallback
+Any fuzz level still requires exactly one match; zero or many → existing hunk errors.
 
-A failed localized update never becomes a whole-file rewrite, fuzzy match, or first-match selection.
+### I22 — Oracle honesty
 
-### I5 — Unique matching
+Candidate lists and repair patches must be derived from the same locator used for apply; no second guessed algorithm.
 
-Every update hunk must identify exactly one location in the current snapshot.
+### I23 — Hash pin precedence
 
-### I6 — State-operation compatibility
+When a pin is present, pin failure precedes hunk matching.
 
-- Add requires missing target.
-- Update requires existing regular text file.
-- Delete requires existing regular file.
+### I24 — Mode exclusivity
 
-### I7 — Concurrent modification protection
-
-The committed file state must derive from the same base state that was validated.
-
-### I8 — Unaffected-content preservation
-
-Bytes outside applied hunk ranges remain unchanged.
-
-### I9 — Stable diagnostics
-
-Equivalent failures produce the same public error code and exit class.
-
-### I10 — Machine-pure JSON
-
-With `--json`, stdout contains exactly one valid JSON document and no incidental text.
-
-### I11 — Bounded resources
-
-Patch size, file size, file count, and operation count are limited.
-
-### I12 — Deterministic ordering
-
-Parsing, planning, commit ordering, diagnostics, and JSON arrays use deterministic ordering.
-
-### I13 — No path aliasing
-
-Two syntactically distinct paths that resolve to the same filesystem object are rejected as a collision.
-
-### I14 — No symlink escape
-
-A path passing through a symlink outside the root is rejected.
-
-### I15 — Validation parity
-
-`--check` executes the same parse, validate, snapshot, plan, and apply phases as normal mode.
-
-### I16 — Atomic visibility per file
-
-Modified files are replaced through same-directory temporary files and atomic rename where the platform supports it.
-
-### I17 — Explicit unsupported inputs
-
-Binary, oversized, invalid UTF-8, special files, and unsupported protocol features fail explicitly.
-
-### I18 — No hidden repository dependency
-
-The tool works without Git, except for optional verification helpers outside the core runtime.
+`--check`, `--plan`, `--verify`, apply, and `--revert` do not silently combine conflicting write behaviors.
 
 ---
 
 ## 6. Data Flow
 
-### 6.1 Normal apply flow
+### 6.1 Normal apply
 
 ```text
-Patch bytes
-  ↓
-Input limit check
-  ↓
-Protocol parse
-  ↓
-Path normalization and policy validation
-  ↓
-Operation-state validation
-  ↓
-Snapshot affected paths
-  ↓
-Compute fingerprints
-  ↓
-Apply all operations in memory
-  ↓
-Compute resulting diff summaries
-  ↓
-Revalidate current fingerprints
-  ↓
-Prepare temporary files and rollback material
-  ↓
-Commit mutations
-  ↓
-Verify committed states
-  ↓
-Emit result
+input → limits → parse → path → snapshot → validate
+  → (hash pins) → locate/emit → risk → plan
+  → revalidate → commit → receipt? → emit success
 ```
 
-### 6.2 Check-only flow
+### 6.2 Check / plan
+
+Same through in-memory apply; no temps; `--plan` adds structured hunk/diff payload.
+
+### 6.3 Verify
 
 ```text
-Patch bytes
-  ↓
-Parse
-  ↓
-Validate
-  ↓
-Snapshot
-  ↓
-Apply in memory
-  ↓
-Compute summaries
-  ↓
-Return success
+… → in-memory plan → materialize shadow → run CMD
+  → fail: discard shadow, exit 1 (verify failed)
+  → ok: revalidate real root → commit → receipt? → cleanup shadow
 ```
 
-No temporary files, writes, renames, deletes, or chmod calls are permitted in check mode.
-
-### 6.3 Failure flow
+### 6.4 Revert
 
 ```text
-Failure occurs
-  ↓
-Map internal error to public code
-  ↓
-Attach path / operation / hunk context
-  ↓
-Attach stable hint
-  ↓
-Ensure no uncommitted temporary state remains
-  ↓
-Rollback if commit started
-  ↓
-Emit JSON or human diagnostic
-  ↓
-Return stable exit code
+load receipt → verify current hashes match receipt.after
+  → build inverse plan → commit → emit
 ```
+
+### 6.5 Failure
+
+No real-root mutation on validation/locate/risk/verify failure. Rollback on mid-commit failure (existing).
 
 ---
 
 ## 7. Data Model and Schemas
 
-### 7.1 JSON success schema
+### 7.1 Success JSON (extensions)
 
-Example:
+Additive fields (version stays `1` or bump to `2` if breaking—**Phase 0**):
 
 ```json
 {
   "version": 1,
   "ok": true,
-  "mode": "apply",
-  "root": "/workspace/project",
-  "summary": {
-    "files_total": 2,
-    "files_added": 0,
-    "files_updated": 2,
-    "files_deleted": 0,
-    "hunks_applied": 3,
-    "lines_added": 7,
-    "lines_deleted": 4,
-    "duration_ms": 14
-  },
+  "mode": "apply|check|plan|verify|revert",
+  "already_applied": false,
+  "summary": {},
+  "files": [],
+  "plan": null,
+  "receipt_path": null,
+  "verify": { "command": "...", "exit_code": 0, "duration_ms": 0 }
+}
+```
+
+### 7.2 Error JSON (extensions)
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "HUNK_AMBIGUOUS",
+    "exit_code": 1,
+    "message": "...",
+    "path": "...",
+    "candidates": [{ "start_line": 10, "end_line": 12, "excerpt": "..." }],
+    "repair_patch": "*** Begin Patch\n...",
+    "hint": "..."
+  }
+}
+```
+
+### 7.3 Receipt schema
+
+```json
+{
+  "version": 1,
+  "root": "...",
+  "created_at": "...",
   "files": [
     {
-      "path": "src/config.rs",
-      "operation": "update",
-      "hunks": 1,
-      "lines_added": 1,
-      "lines_deleted": 1,
-      "before_sha256": "…",
-      "after_sha256": "…"
+      "path": "src/a.rs",
+      "operation": "update|add|delete",
+      "before_blake3": "...",
+      "after_blake3": "...",
+      "before_bytes_b64": null,
+      "after_bytes_b64": null
     }
   ]
 }
 ```
 
-### 7.2 JSON error schema
+Phase 0 decides whether receipts embed full before bytes (size-bounded) or re-read strategy for revert.
 
-```json
-{
-  "version": 1,
-  "ok": false,
-  "error": {
-    "code": "HUNK_NOT_FOUND",
-    "exit_code": 1,
-    "message": "Update hunk 2 did not match the current file.",
-    "path": "src/config.rs",
-    "operation_index": 1,
-    "hunk_index": 2,
-    "source": {
-      "line": 14,
-      "column": 1
-    },
-    "hint": "Read the current affected region and regenerate the patch from current content."
-  }
-}
-```
+### 7.4 Fingerprints / newlines
 
-### 7.3 Internal fingerprint model
-
-Use SHA-256 or BLAKE3 over exact file bytes.
-
-Fingerprint identity must include:
-
-- existence state;
-- exact content bytes;
-- optional metadata identity if needed for race detection.
-
-Recommended:
-
-```rust
-struct BaseIdentity {
-    exists: bool,
-    content_hash: Option<[u8; 32]>,
-    size: Option<u64>,
-    modified_time: Option<SystemTime>,
-    inode_or_file_id: Option<FileId>,
-}
-```
-
-Content hash remains authoritative. Metadata helps detect changes cheaply but must not replace content verification when committing.
-
-### 7.4 Newline model
-
-```rust
-enum NewlineStyle {
-    Lf,
-    CrLf,
-    Mixed,
-    None,
-}
-```
-
-v1 behavior:
-
-- preserve LF;
-- preserve CRLF;
-- reject mixed line endings for update operations unless tests prove safe behavior;
-- allow creation with LF only unless the protocol later supports explicit line endings.
-
-### 7.5 File policy model
-
-```rust
-struct Limits {
-    max_patch_bytes: usize,
-    max_file_bytes: usize,
-    max_files: usize,
-    max_hunks_per_file: usize,
-    max_total_hunks: usize,
-}
-```
-
-Defaults:
-
-```text
-max_patch_bytes      4 MiB
-max_file_bytes       16 MiB
-max_files            128
-max_hunks_per_file   256
-max_total_hunks      2,048
-```
-
-These defaults are intentionally conservative for agent-generated source changes.
+Unchanged: BLAKE3 labeled; LF/CRLF file-wins; mixed rejected on update.
 
 ---
 
 ## 8. Filesystem Transaction Strategy
 
-### 8.1 Required behavior
+### 8.1 Real-root commit
 
-The implementation must prevent partial repository mutation where reasonably possible.
+Unchanged: revalidate → temps → rename → rollback ([docs/design/transaction.md](docs/design/transaction.md)).
 
-### 8.2 Preparation phase
+### 8.2 Shadow materialization
 
-For every create or update:
+- Create exclusive temp directory.
+- Write full planned file set (add/update) and record deletes as absences in shadow view.
+- Tools that expect a full checkout may need copy-on-write of unread files—**Phase 0**:  
+  - **A (simpler):** shadow contains only touched paths (verify cmds must be path-local);  
+  - **B (heavier):** overlay or worktree clone.  
+  Recommendation: start with **A** + document constraints; offer worktree mode later.
 
-1. Create a temporary file in the target file’s parent directory.
-2. Write proposed bytes.
-3. Flush userspace buffers.
-4. Optionally call `sync_all`.
-5. Apply intended permissions.
-6. Retain the temporary path without renaming.
+### 8.3 Promote
 
-For every update or delete:
+After verify 0: run existing commit against real root (do not rename shadow into root).
 
-1. Preserve rollback material:
-   - original bytes in memory for files within the configured size bound; or
-   - a same-directory backup file.
+### 8.4 Honest claims
 
-2. Preserve permissions.
-
-### 8.3 Revalidation phase
-
-Immediately before the first visible mutation:
-
-1. Re-read or rehash every existing affected path.
-2. Verify missing paths remain missing.
-3. Verify existing paths remain identical to snapshots.
-4. Abort with `CONCURRENT_MODIFICATION` if any differ.
-5. Delete all prepared temporary files.
-
-### 8.4 Commit ordering
-
-Recommended deterministic order:
-
-1. Deletes that unblock add-path collisions only if move support exists.
-2. Updates.
-3. Adds.
-4. Remaining deletes.
-
-Without move support and duplicate paths, use lexicographic repository-relative path order.
-
-### 8.5 Rollback
-
-If any commit operation fails after visible mutation begins:
-
-1. Stop applying remaining operations.
-2. Restore committed updates from rollback material.
-3. Remove committed adds.
-4. Restore committed deletes.
-5. Verify restored fingerprints where possible.
-6. Remove temporary files.
-7. Return:
-   - original failure if rollback succeeds;
-   - `ROLLBACK_FAILED` / exit `6` if rollback is incomplete.
-
-The diagnostic must list every path whose state could not be restored.
-
-### 8.6 Honest atomicity claim
-
-Do not claim global filesystem transactionality equivalent to a database transaction.
-
-Document the guarantee as:
-
-> `agent-patch` validates all operations before mutation and performs rollback on commit failure. Per-file replacement is atomic on supported filesystems. Multi-file atomic visibility is not guaranteed by ordinary filesystems, but partial commits are actively rolled back and surfaced as hard errors.
+Never advertise multi-file atomic visibility beyond rollback guarantees.
 
 ---
 
 ## 9. Matching and Patch Application
 
-### 9.1 Parsing model
+### 9.1 Baseline
 
-Do not pass unvalidated raw patch text directly to `diffy`.
+`locate_chunks` → `emit_chunks`; anchors; EOF-prefer; context reduction when unique.
 
-First parse the project protocol into a typed AST.
+### 9.2 Fuzzy unique ladder
 
-Then translate validated update hunks into backend operations.
+```text
+off → exact
+rstrip → trim_end equality, unique
+strip → trim equality, unique
+```
 
-### 9.2 Hunk application
+No unicode punctuation normalize in the first fuzzy ship (Codex has it; defer to keep scope small).
 
-For each update file:
+### 9.3 Risk gate
 
-1. Start from its immutable snapshot.
-2. Apply hunks in source order.
-3. Track applied byte or line ranges.
-4. Reject overlapping or contradictory hunks.
-5. Require each hunk to match uniquely.
-6. Return final text only after all hunks succeed.
-7. Compare base and final output.
-8. Reject no-effect updates unless an explicit future flag permits them.
+For each accepted chunk, compute match count at `lead/trail` stripped needles; if count > 1 at a more-stripped level while exact was unique, emit risk. Policy: `off|warn|refuse`.
 
-### 9.3 Backend adapter tests
+### 9.4 Idempotent detection
 
-Regardless of whether `diffy` or `flickzeug` is used, contract tests must cover:
+Per update file: if emit equals current base → today's `PATCH_NO_EFFECT`. Under `--idempotent`, if old-side cannot be found but new-side uniquely exists as if already applied, succeed with `already_applied`.
 
-- hunk line-number drift;
-- unique context relocation;
-- ambiguous repeated blocks;
-- missing context;
-- adjacent hunks;
-- overlapping hunks;
-- CRLF preservation;
-- final newline changes;
-- empty-file update;
-- Unicode content;
-- context containing patch marker-like text.
+### 9.5 Backend rule
 
-### 9.4 Result diff
-
-Use `similar` to calculate:
-
-- inserted line count;
-- deleted line count;
-- changed ranges;
-- optional unified diff for verbose diagnostics;
-- unexpected broad-churn ratio.
-
-Do not use the generated diff to determine correctness. It is observational output after the intended result has been constructed.
+Still no `diffy`/`flickzeug` apply on V4A text. `similar` observational / plan diffs only.
 
 ---
 
@@ -1244,113 +469,28 @@ Do not use the generated diff to determine correctness. It is observational outp
 
 ### 10.1 Philosophy
 
-Every error must answer:
+Fail closed; prefer repairable diagnostics over silent success.
 
-1. What failed?
-2. Where did it fail?
-3. Why was no mutation performed, or what rollback occurred?
-4. What should the caller do next?
+### 10.2 New / extended codes
 
-No component may swallow an error and proceed using weaker semantics.
+| Code | Exit | When |
+| --- | --- | --- |
+| `HASH_PIN_MISMATCH` | 5 | Pin ≠ snapshot |
+| `VERIFY_FAILED` | 1 | Verify command non-zero; tree unchanged |
+| `RISK_REFUSED` | 1 | Risk gate refuse |
+| `RECEIPT_INVALID` | 2 | Bad receipt |
+| `REVERT_STALE` | 5 | Tree ≠ receipt after hashes |
+| `ALREADY_APPLIED` | 0 | Only as success marker field / optional code under idempotent |
 
-### 10.2 Typed errors
+Exact code set frozen in Phase 0 with [docs/errors.md](docs/errors.md) update.
 
-Recommended hierarchy:
+### 10.3 Oracle generation
 
-```rust
-enum AppError {
-    Input(InputError),
-    Parse(ParseError),
-    Policy(PolicyError),
-    Snapshot(SnapshotError),
-    Apply(ApplyError),
-    Concurrency(ConcurrencyError),
-    Commit(CommitError),
-    Internal(InternalError),
-}
-```
+On hunk failure:
 
-Every public error maps to:
-
-```rust
-struct PublicError {
-    code: ErrorCode,
-    exit_code: u8,
-    message: String,
-    path: Option<RepoPath>,
-    operation_index: Option<usize>,
-    hunk_index: Option<usize>,
-    source_span: Option<SourceSpan>,
-    hint: Option<String>,
-}
-```
-
-### 10.3 Retriable versus non-retriable
-
-The CLI itself performs no blind retries for semantic failures.
-
-Non-retriable within the same invocation:
-
-- malformed patch;
-- unsafe path;
-- unsupported file;
-- ambiguous hunk;
-- hunk not found;
-- duplicate operation;
-- file state mismatch.
-
-Potentially retriable internally:
-
-- interrupted system call;
-- transient temporary-file creation failure;
-- metadata read interrupted by signal.
-
-Internal retry rules:
-
-- retry only explicitly recognized transient OS errors;
-- maximum 2 retries;
-- bounded delay:
-  - first retry immediately;
-  - second retry after 10 ms;
-
-- no retry after visible mutation without entering rollback;
-- record retry count in debug tracing.
-
-Concurrent modification is not internally retried. The caller must reread and regenerate the patch.
-
-### 10.4 No silent fallback examples
-
-Forbidden:
-
-```text
-Exact hunk not found → replace the whole file
-```
-
-Forbidden:
-
-```text
-Two matches found → choose the first
-```
-
-Forbidden:
-
-```text
-CRLF handling failed → normalize to LF
-```
-
-Forbidden:
-
-```text
-Atomic rename failed → copy over the destination
-```
-
-Forbidden:
-
-```text
-JSON serialization failed → print human output to stdout
-```
-
-Required behavior is to fail with a stable diagnostic.
+1. Collect up to N candidate spans (cap for JSON size).
+2. Excerpts ≤ M lines each.
+3. If a unique match exists under `--fuzzy=strip` but not exact, optionally include a repair patch that adds context/anchor—not an auto apply.
 
 ---
 
@@ -1358,653 +498,113 @@ Required behavior is to fail with a stable diagnostic.
 
 ### 11.1 Baseline workload
 
-Target repository-local patch:
+- 10 files, ≤50 hunks, ≤2 MiB total file payload.
+- Locate+emit < 50 ms typical on developer hardware (warm).
+- Verify time dominated by user command (not gated).
 
-- 1–10 files;
-- 1–20 hunks;
-- affected files under 1 MiB each;
-- patch under 256 KiB.
+### 11.2 Shadow cost
 
-### 11.2 Latency targets
+Shadow materialization of touched files only: < 100 ms for baseline without verify command.
 
-On a typical developer laptop with warm filesystem cache:
+### 11.3 Receipt size
 
-- startup and parse:
-  - p50 under 8 ms;
-  - p95 under 20 ms.
+Default cap: refuse to embed bytes beyond `max_file_bytes`; store hashes + paths always.
 
-- `--check`, 1 file / 1 hunk / 100 KiB:
-  - p50 under 10 ms;
-  - p95 under 30 ms.
+### 11.4 Gates
 
-- apply, 10 files / 20 hunks / 5 MiB total:
-  - p50 under 40 ms;
-  - p95 under 120 ms.
-
-- apply, maximum default patch size:
-  - p95 under 500 ms excluding filesystem sync latency.
-
-### 11.3 Memory targets
-
-- steady overhead under 10 MiB for small patches;
-- peak resident memory under:
-  - `3 × total affected input bytes + 32 MiB`;
-
-- never load unrelated repository files;
-- fail before allocation when declared resource limits are exceeded.
-
-### 11.4 Scaling targets
-
-Complexity targets:
-
-- parsing: O(patch bytes);
-- path validation: O(number of path components);
-- snapshot load: O(total affected bytes);
-- diff generation: bounded according to `similar` algorithm; benchmark repetitive worst-case inputs;
-- hunk matching: avoid unbounded quadratic scans across large repetitive files.
-
-For pathological repeated input, enforce time or work limits rather than hanging.
-
-### 11.5 Performance gates
-
-CI benchmark warnings:
-
-- fail only on gross regression initially;
-- flag:
-  - more than 25% latency regression;
-  - more than 25% allocation regression;
-  - more than 2× worst-case matching time.
-
-Use Criterion benchmarks, but keep performance tests separate from correctness tests.
+Criterion bench `apply_update` remains; add bench for locate with risk counting.
 
 ---
 
 ## 12. Instrumentation Plan
 
-### 12.1 Default behavior
+### 12.1 Timers
 
-No telemetry leaves the machine.
+`parse`, `snapshot`, `locate`, `risk`, `emit`, `shadow`, `verify_cmd`, `commit`, `receipt`.
 
-No source content is logged by default.
+### 12.2 Counters
 
-No file contents appear in diagnostics unless the user explicitly requests verbose development output.
+Candidates emitted, fuzzy level used, already_applied count, verify fail count.
 
-### 12.2 Timers
+### 12.3 Debug
 
-Record durations for:
-
-```text
-input_read_ms
-parse_ms
-path_validation_ms
-snapshot_ms
-apply_ms
-revalidation_ms
-commit_prepare_ms
-commit_ms
-rollback_ms
-total_ms
-```
-
-### 12.3 Counters
-
-Record:
-
-```text
-patch_bytes
-operation_count
-file_count
-hunk_count
-input_bytes
-output_bytes
-lines_added
-lines_deleted
-temp_files_created
-filesystem_reads
-filesystem_writes
-internal_retry_count
-```
-
-### 12.4 Debug tracing
-
-Environment variable:
-
-```bash
-AGENT_PATCH_LOG=debug
-```
-
-Optional values:
-
-```text
-error
-warn
-info
-debug
-trace
-```
-
-Logging format:
-
-- structured key-value text by default;
-- optional JSON logs only through a future explicit flag;
-- stderr only.
-
-Every operation receives a short invocation ID.
-
-Example:
-
-```text
-level=debug invocation=7f4a phase=snapshot path=src/config.rs bytes=4821 duration_ms=1
-```
-
-Never log patch contents at `info` or below.
-
-### 12.5 Metrics output
-
-Do not add Prometheus or daemon metrics in v1.
-
-The JSON success object provides sufficient per-invocation instrumentation.
-
-### 12.6 Diagnostic correlation
-
-Include:
-
-- invocation ID;
-- operation index;
-- hunk index;
-- repository-relative path.
-
-Do not include user names, absolute paths in default human output, or source content unnecessarily.
+`AGENT_PATCH_DEBUG=1` traces locate windows (no file bodies by default).
 
 ---
 
 ## 13. Security Model
 
-### 13.1 Threats
+Baseline: [docs/threat-model.md](docs/threat-model.md).
 
-Assume patch input may be malformed or adversarial.
+Additions:
 
-Threats include:
-
-- path traversal;
-- symlink escape;
-- overwriting arbitrary host files;
-- special-file writes;
-- resource exhaustion;
-- malformed Unicode;
-- ambiguous context causing unintended edits;
-- TOCTOU modification;
-- patch marker injection;
-- temporary-file races;
-- accidental secret exposure in logs;
-- decompression or parser bombs if future formats are added.
-
-### 13.2 Required controls
-
-1. Canonicalize the root once.
-2. Reject absolute paths.
-3. Reject `..`.
-4. Resolve and inspect every existing ancestor.
-5. Reject symlink traversal outside root.
-6. Reject special files:
-   - device;
-   - socket;
-   - FIFO;
-   - directory.
-
-7. Use unpredictable temporary names.
-8. Create temporary files with exclusive creation.
-9. Use same-directory temp files.
-10. Enforce patch and file-size bounds.
-11. Avoid shelling out from the Rust runtime.
-12. Avoid interpreting file content as commands.
-13. Keep diagnostics content-bounded.
-14. Fuzz the parser.
-15. Test malicious path encodings and Unicode edge cases.
+1. Verify commands are **user-supplied** and run with the user's privileges—document footguns; no shell interpolation beyond `sh -c` if explicitly chosen (**Phase 0**: argv array vs shell string).
+2. Shadow roots use restrictive temp permissions.
+3. Repair patches never execute.
+4. Doctor never downloads or self-updates binaries.
 
 ---
 
 ## 14. Test Plan
 
-### 14.1 Unit tests
+### 14.1 Unit
 
-#### Parser
+- Fuzzy unique: one/zero/many at each level.
+- Risk gate: unique exact with stripped near-misses.
+- Idempotent already-applied vs `PATCH_NO_EFFECT`.
+- Hash pin mismatch before locate.
+- Oracle candidate ordering stability.
+- Receipt round-trip inverse.
 
-Cover:
+### 14.2 Integration
 
-- valid add;
-- valid update;
-- valid delete;
-- multi-file patch;
-- multiple hunks;
-- missing begin marker;
-- missing end marker;
-- nested begin marker;
-- trailing content;
-- unknown operation;
-- empty path;
-- malformed hunk line;
-- duplicate end marker;
-- marker-like text inside added content;
-- empty patch;
-- no-op hunk;
-- Unicode paths where supported;
-- invalid UTF-8 patch input;
-- limit boundaries.
+- `--plan` zero writes (`CountingFs`).
+- `--verify` success promotes; failure leaves root byte-identical.
+- `--revert` after apply restores blake3.
+- Concurrent modification during verify window.
+- CLI: `doctor` exit codes.
 
-Every parser failure test must assert:
+### 14.3 Fixtures / dogfood
 
-- public error code;
-- source line;
-- source column where available;
-- no panic;
-- no partial AST.
+- Extend `fixtures/dogfood` scenarios for verify/oracle/revert.
+- Keep Codex subset green.
+- `scripts/dogfood` covers new gates or a `scripts/dogfood-next` until stable.
 
-#### Path policy
+### 14.4 Fuzz
 
-Cover:
+Existing `parse_patch` / `path_policy` / `apply_update`; add fuzz for fuzzy normalizer not panicking.
 
-- normal relative paths;
-- `..`;
-- absolute Unix paths;
-- Windows drive-like paths even on Unix;
-- repeated separators;
-- `.` segments;
-- symlink within root;
-- symlink outside root;
-- symlinked parent;
-- path alias collision;
-- directory target;
-- FIFO or socket where platform supports fixtures;
-- nonexistent parent;
-- case-only collision behavior on case-insensitive filesystems where testable.
+### 14.5 Property
 
-#### Hunk matching
-
-Cover:
-
-- exact match;
-- shifted line position;
-- repeated unique block with wider context;
-- ambiguous block;
-- missing block;
-- adjacent hunks;
-- overlapping hunks;
-- hunk order dependence;
-- insertion at start;
-- insertion at end;
-- deletion of full file contents;
-- empty file;
-- CRLF;
-- no final newline;
-- Unicode graphemes;
-- tabs and spaces remain distinct;
-- whitespace-only lines;
-- extremely long lines;
-- marker text within source.
-
-#### Snapshot
-
-Cover:
-
-- missing file;
-- regular file;
-- oversized file;
-- invalid UTF-8;
-- UTF-8 BOM;
-- CRLF;
-- mixed newline;
-- no final newline;
-- permissions capture;
-- content hash stability.
-
-#### Diff summary
-
-Cover:
-
-- line additions;
-- line deletions;
-- replacement;
-- empty-to-content;
-- content-to-empty;
-- no change;
-- CRLF preservation;
-- large repeated input.
-
-#### Diagnostics
-
-Snapshot-test:
-
-- human messages;
-- JSON schema;
-- path and hunk fields;
-- stable hints;
-- absence of ANSI in JSON;
-- absence of source content for sensitive failures;
-- exact exit mapping.
-
-### 14.2 Property tests
-
-Use `proptest` for:
-
-1. Parser never panics on arbitrary byte input.
-2. Unsafe path inputs never escape the root.
-3. Successful apply followed by diff confirms only intended output.
-4. Update application is deterministic.
-5. JSON output always parses.
-6. Check mode never invokes mutating filesystem operations.
-7. Equivalent line-ending round trips preserve exact bytes.
-8. Random failed patches do not modify filesystem state.
-9. Add then inverse delete restores original tree in controlled fixtures.
-10. Generated non-overlapping hunks apply in source order consistently.
-
-### 14.3 Integration tests
-
-Run against real temporary directories.
-
-#### Core apply
-
-- apply one update;
-- apply add/update/delete together;
-- validate all final bytes;
-- validate permissions;
-- validate output;
-- validate exit code.
-
-#### Atomic prevalidation
-
-Construct a patch where:
-
-- first operation is valid;
-- second operation fails.
-
-Assert:
-
-- neither path changed;
-- no temporary files remain;
-- error references second operation.
-
-#### Concurrent modification
-
-Use a test synchronization hook:
-
-1. snapshot file;
-2. pause before commit;
-3. modify file externally;
-4. resume.
-
-Assert:
-
-- exit code `5`;
-- no intended patch applied;
-- external modification remains intact;
-- diagnostic code is `CONCURRENT_MODIFICATION`.
-
-#### Commit failure and rollback
-
-Use fault-injected filesystem adapter:
-
-- fail second rename;
-- fail delete;
-- fail chmod;
-- fail temp-file flush;
-- fail rollback restore.
-
-Assert exact postconditions for each case.
-
-#### Check mode
-
-Assert:
-
-- successful plan;
-- identical diagnostics to apply mode before commit;
-- zero writes;
-- zero temp files;
-- unchanged file tree.
-
-#### Root confinement
-
-Attempt:
-
-- `../outside`;
-- absolute path;
-- symlink to outside;
-- symlinked intermediate directory.
-
-Assert no outside file is read or written.
-
-#### Resource limits
-
-Test:
-
-- exact limit accepted;
-- one byte over rejected;
-- too many files;
-- too many hunks;
-- oversized target file.
-
-#### CLI input modes
-
-Test:
-
-- stdin;
-- patch file;
-- missing patch file;
-- both malformed combinations if applicable;
-- empty stdin;
-- broken pipe behavior;
-- JSON mode;
-- quiet mode.
-
-### 14.4 End-to-end tests
-
-Run the compiled release binary.
-
-#### E2E-1 — Canonical agent invocation
-
-Execute:
-
-```bash
-agent-patch <<'PATCH'
-...
-PATCH
-```
-
-Assert:
-
-- exit `0`;
-- concise stdout;
-- expected repository diff;
-- `git diff --check` succeeds.
-
-#### E2E-2 — User-supplied multi-file patch
-
-Apply a realistic patch across:
-
-- Rust source;
-- TOML configuration;
-- Markdown documentation.
-
-Assert exact file contents and no unrelated churn.
-
-#### E2E-3 — Ambiguous target
-
-Use repeated code blocks.
-
-Assert:
-
-- exit `1`;
-- code `HUNK_AMBIGUOUS`;
-- no mutation;
-- hint tells the agent to read more context.
-
-#### E2E-4 — Stale patch
-
-Generate patch from old content, modify target, apply.
-
-Assert:
-
-- exit `1` or `5`, depending on when drift is detected;
-- no overwrite;
-- external content preserved.
-
-#### E2E-5 — Malicious paths
-
-Use path traversal and symlink escape.
-
-Assert:
-
-- exit `4`;
-- no outside access;
-- stable JSON error.
-
-#### E2E-6 — Large but valid patch
-
-Use:
-
-- 100 files;
-- 1,000 total hunks;
-- near configured byte limits.
-
-Assert target latency and memory budgets.
-
-#### E2E-7 — Crash recovery simulation
-
-Inject process termination between commit steps using a test-only binary build.
-
-Verify:
-
-- repository state is either original or explicitly recoverable;
-- no silent success;
-- leftover temp/backup files are recognizable and bounded.
-
-A future `recover` command may be added if crash-recovery artifacts are retained. Do not add one in v1 unless crash testing proves it necessary.
-
-### 14.5 Logging expectations in tests
-
-Every failing integration and E2E test must capture:
-
-- command invocation;
-- working directory;
-- exit status;
-- stdout;
-- stderr;
-- pre-operation tree digest;
-- post-operation tree digest;
-- per-file hashes for affected paths;
-- leftover temporary files;
-- elapsed time.
-
-On success, routine CI logs should stay compact.
-
-On failure, test helpers should print:
-
-```text
-=== invocation ===
-...
-
-=== exit ===
-...
-
-=== stdout ===
-...
-
-=== stderr ===
-...
-
-=== before tree ===
-...
-
-=== after tree ===
-...
-
-=== affected file diffs ===
-...
-```
-
-Do not rely on assertion messages that show only “left != right.”
-
-### 14.6 Fuzzing
-
-Add cargo-fuzz targets for:
-
-- protocol parser;
-- path parser;
-- hunk translator;
-- update application;
-- JSON diagnostics serialization.
-
-Fuzz invariants:
-
-- no panic;
-- no out-of-root path;
-- no uncontrolled allocation;
-- no mutation during parse;
-- deterministic result for repeated input.
+Locate→emit→locate idempotence under `--idempotent` for already-applied cases.
 
 ---
 
 ## 15. Repository Structure
 
 ```text
-agent-patch/
-├── Cargo.toml
-├── Cargo.lock
+apply_patch/
+├── IMPLEMENTATION_PLAN.md          # this plan
 ├── README.md
-├── LICENSE
-├── CLAUDE.md
 ├── AGENTS.md
-├── crates/
-│   └── agent-patch/
-│       ├── Cargo.toml
-│       ├── src/
-│       │   ├── main.rs
-│       │   ├── cli.rs
-│       │   ├── app.rs
-│       │   ├── input.rs
-│       │   ├── diagnostics.rs
-│       │   ├── telemetry.rs
-│       │   ├── limits.rs
-│       │   ├── path_policy.rs
-│       │   ├── snapshot.rs
-│       │   ├── validate.rs
-│       │   ├── plan.rs
-│       │   ├── commit.rs
-│       │   ├── fs.rs
-│       │   ├── protocol/
-│       │   │   ├── mod.rs
-│       │   │   ├── ast.rs
-│       │   │   ├── lexer.rs
-│       │   │   └── parser.rs
-│       │   └── engine/
-│       │       ├── mod.rs
-│       │       ├── matcher.rs
-│       │       ├── apply.rs
-│       │       └── diff_summary.rs
-│       ├── tests/
-│       │   ├── cli.rs
-│       │   ├── atomicity.rs
-│       │   ├── concurrency.rs
-│       │   ├── path_safety.rs
-│       │   ├── limits.rs
-│       │   └── fixtures/
-│       └── benches/
-│           ├── parser.rs
-│           ├── matcher.rs
-│           └── apply.rs
-├── scripts/
-│   ├── agent-patch
-│   ├── test
-│   ├── lint
-│   └── bench
-├── docs/
-│   ├── protocol.md
-│   ├── errors.md
-│   ├── architecture.md
-│   └── threat-model.md
-└── fuzz/
-    ├── Cargo.toml
-    └── fuzz_targets/
+├── .envrc.example
+├── .cursor/skills/agent-patch/
+├── crates/agent-patch/
+│   ├── src/engine/{locate,emit,matcher,apply,diff_summary}.rs
+│   ├── src/{commit,plan,shadow,receipt,verify,doctor,…}.rs
+│   ├── tests/
+│   ├── tests/fixtures/codex-scenarios/
+│   └── benches/
+├── fixtures/dogfood/               # manual / agent dogfood tree
+├── fuzz/
+├── scripts/{agent-patch,dogfood,test,lint,bench}
+└── docs/
+    ├── contract-v1.md
+    ├── protocol.md
+    ├── errors.md
+    ├── design/
+    ├── archive/2026-07-greenfield-implementation-plan.md
+    └── research-*.md
 ```
 
 ---
@@ -2013,182 +613,35 @@ agent-patch/
 
 ### 16.1 Workstream boundaries
 
-Each parallel agent owns a non-overlapping module group.
+| Agent | Owns | Must not touch |
+| --- | --- | --- |
+| A — Contract/docs | protocol, errors, schemas | engine internals |
+| B — Oracle diagnostics | error JSON, excerpts, repair_patch | commit |
+| C — Fuzzy + risk | matcher/locate policies | FS |
+| D — Plan CLI | `--plan` payload | verify |
+| E — Shadow + verify | shadow FS, verify runner | parser grammar |
+| F — Receipt + revert | receipt serde, inverse plan | fuzzy |
+| G — Doctor + PATH DX | doctor, README/skill | apply semantics |
+| H — Dogfood/CI | fixtures, dogfood script, CI | contract freeze |
 
-#### Agent A — Protocol
+### 16.2 Freeze first
 
-Owns:
-
-```text
-protocol/*
-docs/protocol.md
-parser unit tests
-parser fuzz target
-```
-
-Contract:
-
-- no filesystem dependencies;
-- outputs typed AST;
-- stable source spans;
-- no public diagnostics formatting.
-
-#### Agent B — Path safety and snapshots
-
-Owns:
-
-```text
-path_policy.rs
-snapshot.rs
-path-safety tests
-snapshot tests
-docs/threat-model.md path sections
-```
-
-Contract:
-
-- outputs validated `RepoPath`;
-- all target states represented explicitly;
-- no patch application.
-
-#### Agent C — Patch engine
-
-Owns:
-
-```text
-engine/*
-engine tests
-matcher benchmarks
-backend adapter evaluation
-```
-
-Contract:
-
-- pure in-memory operation;
-- deterministic matching;
-- no filesystem;
-- no CLI or JSON concerns.
-
-#### Agent D — Planning and validation
-
-Owns:
-
-```text
-validate.rs
-plan.rs
-limits.rs
-validation tests
-```
-
-Contract:
-
-- consumes AST plus snapshots;
-- outputs complete `PatchPlan`;
-- no visible mutation.
-
-#### Agent E — Filesystem and commit
-
-Owns:
-
-```text
-fs.rs
-commit.rs
-atomicity tests
-fault-injection filesystem
-concurrency tests
-```
-
-Contract:
-
-- accepts only validated plans;
-- owns every mutation;
-- implements rollback.
-
-#### Agent F — CLI and diagnostics
-
-Owns:
-
-```text
-main.rs
-cli.rs
-app.rs
-input.rs
-diagnostics.rs
-telemetry.rs
-docs/errors.md
-CLI integration tests
-```
-
-Contract:
-
-- no patch semantics;
-- stable output and exits;
-- JSON schema ownership.
-
-#### Agent G — E2E, packaging, and repository integration
-
-Owns:
-
-```text
-scripts/*
-README.md
-CLAUDE.md
-AGENTS.md
-E2E tests
-CI
-release packaging
-```
-
-Contract:
-
-- does not alter internal APIs without coordination;
-- validates built binary as an external consumer.
-
-### 16.2 Shared contracts to freeze first
-
-Before parallel implementation, freeze:
-
-1. Patch grammar.
-2. AST types.
-3. Public error codes.
-4. Exit codes.
-5. `RepoPath` API.
-6. Snapshot API.
-7. `PatchPlan` API.
-8. Filesystem trait.
-9. JSON schema.
-10. Default limits.
-11. Matching semantics.
-12. Concurrency doctrine.
-13. Commit and rollback guarantees.
-
-Place frozen contracts in:
-
-```text
-docs/contracts/
-```
-
-or in a single:
-
-```text
-docs/contract-v1.md
-```
-
-No agent may change a frozen field, enum variant, exit code, or invocation form without an explicit contract change.
+1. Flag matrix and mutual exclusions.
+2. Error code list + JSON extensions.
+3. Receipt schema + size policy.
+4. Shadow strategy A vs B.
+5. Verify command execution model (argv vs shell).
+6. Fuzzy levels shipped in first bump.
+7. Whether JSON `version` stays 1.
 
 ### 16.3 Integration order
 
 ```text
-Phase 0: freeze contracts
-Phase 1: parser + path + diagnostics skeletons
-Phase 2: snapshots + validation + pure engine
-Phase 3: planner + check-only application
-Phase 4: commit coordinator + rollback
-Phase 5: CLI integration
-Phase 6: security and fuzzing
-Phase 7: performance and packaging
-Phase 8: dogfood with coding agents
+docs freeze → oracle errors → --plan → fuzzy/risk/idempotent
+  → receipts/revert → shadow/verify → doctor → dogfood/CI
 ```
+
+Optional parallel: `translate` after `--plan` diffs exist.
 
 ---
 
@@ -2198,368 +651,220 @@ Phase 8: dogfood with coding agents
 
 Deliver:
 
-- protocol document;
-- error taxonomy;
-- exit codes;
-- JSON schema;
-- operation semantics;
-- matching semantics;
-- resource limits;
-- root and symlink policy.
+- matching/CLI/error/receipt/shadow decisions written into docs;
+- open decisions (§20) closed or explicitly deferred.
 
 Acceptance:
 
-- all examples parse unambiguously;
-- no open semantic questions remain;
+- no ambiguous flag semantics;
 - parallel agents can implement without guessing.
 
-### Phase 1 — Parser and diagnostics
+### Phase 1 — Oracle diagnostics
 
 Deliver:
 
-- complete parser;
-- source spans;
-- typed errors;
-- human and JSON diagnostics.
+- candidates + excerpts on hunk failures;
+- optional repair_patch when fuzzy-unique exists;
+- docs + tests.
 
 Acceptance:
 
-- malformed corpus tests pass;
-- parser fuzz target runs for at least 10 million cases without crash;
-- JSON output validates against checked-in schema.
+- ambiguous fixture returns ≥2 candidates;
+- JSON size capped;
+- no auto-apply of repair.
 
-### Phase 2 — Safe snapshot and pure apply
+### Phase 2 — `--plan`
 
 Deliver:
 
-- path confinement;
-- file snapshots;
-- pure patch engine;
-- diff summaries.
+- structured plan + per-file unified or line diffs via `similar`;
+- zero writes.
 
 Acceptance:
 
-- no filesystem writes;
-- ambiguous matching rejected;
-- exact content preservation verified;
-- CRLF and final-newline tests pass or explicitly reject unsupported cases.
+- parity with `--check` failure modes;
+- CountingFs shows no mutating calls.
 
-### Phase 3 — Check mode
+### Phase 3 — Fuzzy unique + risk + idempotent
 
 Deliver:
 
-- full CLI `--check`;
-- parse-to-plan pipeline;
-- result summaries.
+- `--fuzzy`, `--risk`, `--idempotent`;
+- contract bump;
+- unit + dogfood coverage.
 
 Acceptance:
 
-- zero mutating filesystem calls;
-- realistic patches validate;
-- stale and malformed patches fail correctly;
-- latency target met.
+- never first-match;
+- risk refuse blocks commit;
+- idempotent replay exits 0 with `already_applied`.
 
-### Phase 4 — Commit and rollback
+### Phase 4 — Hash pins
 
 Deliver:
 
-- temp-file preparation;
-- revalidation;
-- update/add/delete commit;
-- rollback;
-- fault injection.
+- parse + validate pins;
+- `HASH_PIN_MISMATCH`.
 
 Acceptance:
 
-- no partial mutation across all injected single-failure points;
-- concurrent modification detected;
-- rollback failure distinctly reported;
-- no leftover temp files after ordinary failures.
+- pin fail before locate;
+- Codex-style fixtures still pass without pins.
 
-### Phase 5 — Release CLI
+### Phase 5 — Receipts + revert
 
 Deliver:
 
-- final options;
-- repo-local wrapper;
-- documentation;
-- stable exit behavior.
+- `--receipt`, `--revert`;
+- bounded storage policy.
 
 Acceptance:
 
-```bash
-scripts/agent-patch --check < fixture.patch
-scripts/agent-patch < fixture.patch
-scripts/agent-patch --json < fixture.patch
-```
+- apply→revert restores blake3 for add/update/delete sets;
+- stale revert fails closed.
 
-all behave exactly as documented.
-
-### Phase 6 — Security hardening
+### Phase 6 — Shadow verify
 
 Deliver:
 
-- path traversal corpus;
-- symlink tests;
-- resource-limit tests;
-- parser fuzzing;
-- filesystem fuzz or model tests where feasible.
+- `--verify`;
+- shadow strategy A;
+- cleanup.
 
 Acceptance:
 
-- no out-of-root read or write;
-- no panics;
-- no unbounded memory behavior on adversarial input;
-- threat model reviewed.
+- failing verify leaves root unchanged;
+- passing verify matches direct apply bytes;
+- path escape still rejected.
 
-### Phase 7 — Performance
+### Phase 7 — Doctor + DX
 
 Deliver:
 
-- Criterion suite;
-- benchmark fixture generator;
-- baseline numbers;
-- regression thresholds.
+- `doctor` subcommand;
+- README/skill/AGENTS updates;
+- stale release detection.
 
 Acceptance:
 
-- performance targets met on Linux reference machine;
-- pathological repetitive-input behavior bounded;
-- release binary size documented.
+- doctor fails on obvious stale release when sources newer;
+- documents PATH/direnv/`scripts/agent-patch`.
 
-### Phase 8 — Agent dogfooding
+### Phase 8 — Hardening
 
-Run at least three agent environments:
+Deliver:
 
-- Claude Code;
-- Codex or equivalent patch-familiar agent;
-- generic shell-capable coding agent.
+- extended dogfood;
+- fuzz/bench updates;
+- optional Move (separate contract) or explicit defer;
+- optional `translate`.
 
-Tasks:
+Acceptance:
 
-1. Single localized replacement.
-2. Multi-hunk same-file change.
-3. Multi-file coherent change.
-4. User-supplied patch.
-5. Stale patch recovery.
-6. Ambiguous target recovery.
-7. Add and delete operations.
-
-Collect:
-
-- correct tool-selection rate;
-- malformed patch rate;
-- successful first-apply rate;
-- retries per task;
-- accidental whole-file rewrite attempts;
-- diagnostic usefulness;
-- token output compared with whole-file replacement.
-
-Acceptance targets:
-
-```text
-first-apply success rate            ≥ 90%
-malformed patch rate                ≤ 3%
-unsafe path attempts accepted       0
-silent partial application          0
-whole-file rewrite fallback         0
-agent recovery after stale patch    ≥ 90%
-```
+- CI green Linux/macOS;
+- performance non-regressions on apply bench;
+- research-next-pass updated to current backlog only.
 
 ---
 
 ## 18. Verification Commands
 
-Minimum local gate:
-
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo test --workspace --release
+scripts/dogfood
+scripts/bench
+cargo +nightly fuzz run parse_patch -- -max_total_time=30
+
+# planned
+scripts/agent-patch doctor
+scripts/agent-patch --plan --json < change.patch
+scripts/agent-patch --verify 'cargo check -q' < change.patch
+scripts/agent-patch --receipt /tmp/r.json < change.patch
+scripts/agent-patch --revert /tmp/r.json
 ```
 
-Security and property gate:
+Fixture dogfood:
 
 ```bash
-cargo test --test path_safety
-cargo test --test atomicity
-cargo test --test concurrency
-cargo test --test limits
+agent-patch --root fixtures/dogfood --check < fixtures/dogfood/some.patch
 ```
-
-Fuzz smoke gate:
-
-```bash
-cargo fuzz run parser -- -max_total_time=60
-cargo fuzz run path_parser -- -max_total_time=60
-cargo fuzz run hunk_apply -- -max_total_time=60
-```
-
-Benchmark gate:
-
-```bash
-cargo bench
-```
-
-End-to-end gate:
-
-```bash
-scripts/test-e2e
-```
-
-Manual smoke:
-
-```bash
-tmp="$(mktemp -d)"
-cd "$tmp"
-git init -q
-
-mkdir -p src
-cat > src/config.rs <<'EOF'
-pub const RETRIES: usize = 2;
-pub const TIMEOUT_SECS: u64 = 30;
-EOF
-
-/path/to/agent-patch <<'PATCH'
-*** Begin Patch
-*** Update File: src/config.rs
-@@
- pub const RETRIES: usize = 2;
--pub const TIMEOUT_SECS: u64 = 30;
-+pub const TIMEOUT_SECS: u64 = 45;
-*** End Patch
-PATCH
-
-git diff --check
-git diff -- src/config.rs
-```
-
-Expected:
-
-- exit `0`;
-- only timeout line changes;
-- no temporary files;
-- no formatting churn.
 
 ---
 
 ## 19. Claude Code and Agent Instructions
 
-Recommended repository instruction:
+Operational source of truth: [AGENTS.md](AGENTS.md), [`.cursor/skills/agent-patch/SKILL.md`](.cursor/skills/agent-patch/SKILL.md).
 
-````markdown
-## Localized file editing
+Durable rules for agents implementing this plan:
 
-Use the native exact-replacement edit operation for one small, unique
-replacement.
-
-Use `scripts/agent-patch` when:
-
-- a change contains multiple related hunks;
-- several files should change atomically;
-- additions or removals are clearer as contextual hunks;
-- the user supplied a patch;
-- exact replacement would require copying a large unchanged block.
-
-Invoke it with a single-quoted heredoc:
-
-```bash
-scripts/agent-patch <<'PATCH'
-*** Begin Patch
-*** Update File: path/to/file
-@@
--old text
-+new text
-*** End Patch
-PATCH
-```
-````
-
-For a nontrivial patch, validate first:
-
-```bash
-scripts/agent-patch --check < /tmp/change.patch
-```
-
-When a patch fails, read the current affected region and regenerate the patch.
-Do not recover by overwriting the entire existing file.
-
-Do not guess unsupported flags. Run:
-
-```bash
-scripts/agent-patch --help
-```
-
-````
-
-Keep this directive short. The executable’s diagnostics should carry most recovery guidance.
+1. Prefer `scripts/agent-patch` / bare `agent-patch` for multi-hunk edits; dogfood on `fixtures/dogfood` before touching crate sources when experimenting.
+2. Contract bump before matching/success-mode changes.
+3. No whole-file rewrite recovery after `HUNK_*`.
+4. No nesting heredocs inside `$(...)`.
+5. Rebuild release after engine changes before trusting the wrapper (`doctor` / `cargo build --release`).
+6. Keep docs in current-state voice.
 
 ---
 
 ## 20. Open Decisions to Resolve Before Coding
 
-The following must be explicitly decided during Phase 0:
+Phase 0 must decide:
 
-1. Use `diffy`, `flickzeug`, or a custom matcher.
-2. Whether context reduction is supported.
-3. Whether mixed line endings are rejected or preserved.
-4. Whether UTF-8 BOM is preserved.
-5. Whether delete operations require file-content confirmation.
-6. Whether rename/move is v1 or deferred.
-7. Whether empty-file deletion is allowed.
-8. Whether no-op patches succeed or fail.
-9. Whether executable permissions on newly added files can be expressed.
-10. Whether commit uses in-memory rollback material or backup files.
-11. Whether directory creation is implicit for `Add File`.
-12. Whether parent directories created during a failed transaction are removed.
-13. Whether absolute root paths appear in JSON.
-14. Whether content hashes are SHA-256 or BLAKE3.
-15. Whether fsync is default, optional, or platform-dependent.
+1. JSON schema version: stay `1` additive vs bump to `2`.
+2. Shadow strategy A (touched paths only) vs B (worktree/overlay).
+3. Verify execution: argv list vs `sh -c` string; working directory and env vars.
+4. Receipt storage: hashes-only vs bounded base64 bodies; default path.
+5. Fuzzy levels in first bump: `rstrip` only vs `rstrip+strip`.
+6. Risk default: `off` vs `warn`.
+7. Idempotent default: off vs on.
+8. Whether `ALREADY_APPLIED` is a separate exit/code or only a success field.
+9. Hash pin header grammar and multi-hash algorithms (BLAKE3-only recommended).
+10. Whether `--verify` implies receipt auto-write.
+11. Mutual exclusion: `--verify` with `--check` / `--plan`.
+12. Move File: implement in this plan’s Phase 8 or keep deferred.
+13. `translate` in-scope or backlog-only.
+14. Maximum candidates/excerpts bytes in error JSON.
+15. Doctor severity: warn vs non-zero exit on stale release.
 
-Recommended v1 decisions:
+Recommended defaults:
 
 ```text
-backend                 adapter over diffy/flickzeug, contract-tested
-context reduction       supported only if unique and deterministic
-mixed line endings      reject updates
-UTF-8 BOM               preserve
-delete confirmation     path-state only
-rename                   defer
-no-op patch              fail
-executable add mode      defer
-rollback storage         in memory under file-size limit
-directory creation      explicit and transactional for Add File
-absolute paths in JSON   only when explicitly requested
-hash                     BLAKE3 internally; label algorithm explicitly
-fsync                    enabled for temp files, configurable later
-````
+json version              1 additive fields
+shadow                    A (touched paths) + docs for limits
+verify                    argv array; cwd = shadow root
+receipt                   hashes + paths; optional bodies ≤ max_file_bytes
+fuzzy first ship          rstrip + strip; default off
+risk default              warn in human, refuse in --json CI profiles later; ship default off
+idempotent default        off
+already_applied           success field; exit 0
+hash pins                 blake3 only
+verify ≠ check            exclusive
+Move                      deferred (design/move.md)
+translate                 backlog after --plan
+oracle caps               ≤8 candidates; ≤20 lines/excerpt; ≤16KiB repair_patch
+doctor stale release      exit 1 when release older than src and release is what wrapper selects
+```
 
 ---
 
 ## 21. Definition of Done
 
-The project is complete for v1 when:
+This plan is complete when:
 
-1. The documented patch protocol is frozen and versioned.
-2. All supported operations apply deterministically.
-3. Malformed, stale, ambiguous, unsafe, and unsupported patches fail closed.
-4. No validation failure modifies the filesystem.
-5. Commit failures trigger tested rollback.
-6. Concurrent modifications are never overwritten.
-7. JSON output is stable and machine-readable.
-8. Exit codes are stable and documented.
-9. Linux and macOS CI pass.
-10. Parser, path, and hunk fuzz targets run cleanly.
-11. Performance targets are met.
-12. Real coding agents successfully use the repo-local binary through `Bash`.
-13. The agent instruction fits in a compact `CLAUDE.md` section.
-14. No MCP server or harness-specific registration is required.
-15. No whole-file rewrite fallback exists anywhere in the codebase.
-16. The README enables a new user or coding agent to:
-    - build;
-    - validate a patch;
-    - apply a patch;
-    - understand a failure;
-    - verify the resulting diff;
-      within ten minutes.
+1. Phase 0 decisions are recorded in contract/protocol/errors docs.
+2. Oracle diagnostics ship and are covered by tests.
+3. `--plan` provides structured preview with zero writes.
+4. Unique-only `--fuzzy` and risk/idempotent modes match the bumped contract.
+5. Hash pins fail closed before locate.
+6. Receipts + revert restore content for supported ops.
+7. `--verify` promotes only on command success and never leaves partial real-root mutation on verify failure.
+8. `doctor` detects PATH/direnv/stale-release issues.
+9. Linux and macOS CI pass (`fmt`, `clippy -D warnings`, `test`, `dogfood`).
+10. Fuzz targets remain crash-free for agreed smoke durations.
+11. README, AGENTS, and `.cursor/skills/agent-patch` describe current behavior in present tense.
+12. No silent fuzzy first-match, no whole-file fallback, no `diffy`/`flickzeug` V4A apply path.
+13. `fixtures/dogfood` exercises verify/oracle/revert or documents temporary gaps.
+14. Archived greenfield plan remains historical only; this file is the active plan.
+15. A new agent can: read §3 and §17, implement one phase, and validate with §18 within one working session.
