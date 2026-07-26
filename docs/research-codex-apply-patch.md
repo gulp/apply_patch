@@ -82,10 +82,12 @@ From scenario fixtures under `tests/fixtures/scenarios/`:
 | --- | --- | --- |
 | Multi-op atomicity | **Not transactional** — `015_failure_after_partial_success_leaves_changes` expects first Add to remain | Validate all in memory; commit with rollback |
 | Add existing file | Overwrites (`011_add_overwrites_existing_file`) | `FILE_ALREADY_EXISTS` |
-| Move / rename | Supported (`*** Move to:`) | Deferred |
-| Pure addition hunk | Allowed (append) | Ambiguous without context → fail |
+| Move / rename | Supported (`*** Move to:`) | Unsupported (see [design/move.md](./design/move.md)) |
+| `*** End of File` | EOF-prefer + fuzz ladder | EOF-prefer exact, then unique forward |
+| Pure addition hunk | Allowed (append) | Ambiguous without context → fail (EOF pure-`+` appends at end) |
 | Matching | First fuzzy match wins | Unique exact (+ controlled context reduction) |
 | Diff library | `similar` for unified diff of result | `similar` for line counts |
+| Portable scenarios | Full fixture tree under Codex | Compatible unique-exact subset in `tests/fixtures/codex-scenarios/` |
 
 Codex tracks an `AppliedPatchDelta` with `exact: bool` because writes can partially succeed (e.g. truncate then ENOSPC); delta is used for recovery/accounting rather than full rollback.
 
@@ -100,7 +102,7 @@ NNN_name/
   expected/   # final tree
 ```
 
-README states the suite is meant to be portable across languages. Strong pattern for `agent-patch` E2E.
+README states the suite is meant to be portable across languages. `agent-patch` runs a unique-exact-compatible subset via `tests/codex_scenarios.rs` (exclusions documented in that fixture README).
 
 ## Zed `codex-acp` integration
 
@@ -124,16 +126,16 @@ So ACP is a real agent-harness editing path: it **displays** patches via both pa
 
 Using `diffy::apply` as the engine for the Codex/agent-patch protocol would require translating typed hunks into unified diffs (or reparsing), and would inherit unified-diff location/fuzz semantics — which both Codex and our contract deliberately avoid exposing as the agent protocol.
 
-## Best practices to take into `agent-patch`
+## Practices reflected in `agent-patch`
 
-1. **Keep a protocol-native matcher** (already done). Do not route apply through `diffy`; use `similar` only for observational summaries (Codex pattern).
-2. **Treat fuzzy matching as an explicit product mode**, not silent default. Codex’s whitespace/unicode passes explain higher first-apply rates but violate our I4/I5 invariants unless gated behind a flag.
-3. **Adopt Codex-style scenario fixtures** (`input/` + `patch.txt` + `expected/`) for portable E2E parity testing; optionally run a subset of their scenarios where semantics align.
-4. **Transactionality is a real differentiator** vs Codex (partial apply on failure). Keep advertising and testing it.
-5. **If UI/ACP integration is needed later**, use `diffy` (or `similar`) to parse *resulting* unified diffs for display — same split as Zed.
-6. **Protocol extensions worth tracking** (not necessarily v1): `*** Move to:`, `*** End of File`, `@@ change_context` as a seek anchor, streaming parse, heredoc-lenient CLI input.
-7. **Abstract filesystem** behind a trait (Codex: `ExecutorFileSystem`) — we have `FileSystem`; keep commit/rollback behind it for fault injection.
-8. **Agent instructions matter as much as the engine** — Codex’s prompt teaches `@@` class/method anchors and 3-line context; our `CLAUDE.md` should stay aligned with fail-closed unique matching.
+1. **Protocol-native matcher** — custom unique-exact locate/emit; `similar` only for observational summaries (Codex pattern).
+2. **No silent fuzzy default** — whitespace/unicode fuzz stays out of the default path; any future `--fuzzy` mode would still require uniqueness.
+3. **Codex-style scenario fixtures** — compatible unique-exact subset under `tests/fixtures/codex-scenarios/`.
+4. **Transactional multi-file commit** — validate in memory; commit with rollback (delta vs Codex partial leave).
+5. **Display vs apply split** — `diffy`/`similar` may parse *resulting* unified diffs for UI; they are not the V4A apply engine (same split as Zed ACP).
+6. **Protocol surface** — `*** End of File` and `@@ <anchor>` are in the dialect; `*** Move to:` and streaming parse remain backlog ([research-next-pass.md](./research-next-pass.md), [design/move.md](./design/move.md)).
+7. **Abstract filesystem** — `FileSystem` trait for commit/rollback and fault injection.
+8. **Agent instructions** — `AGENTS.md` / `CLAUDE.md` teach fail-closed unique matching and `scripts/agent-patch` usage.
 
 ## Source map
 

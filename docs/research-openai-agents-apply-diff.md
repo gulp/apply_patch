@@ -95,7 +95,7 @@ dest = orig[0:chunk.orig_index] + ins_lines + … + orig[cursor:]
 cursor advances by len(del_lines)
 ```
 
-This is equivalent to Codex Rust `compute_replacements` + `apply_replacements`, and cleaner than repeatedly re-matching on a mutated buffer (our current approach). Applying on **original indices after all matches are resolved** (or applying ascending with a cursor) avoids coordinate remapping bugs.
+This is equivalent to Codex Rust `compute_replacements` + `apply_replacements`. Applying on **original indices after all matches are resolved** (forward cursor emit) avoids coordinate remapping bugs from mutate-and-rematch.
 
 ## Comparison matrix
 
@@ -104,34 +104,27 @@ This is equivalent to Codex Rust `compute_replacements` + `apply_replacements`, 
 | Pure text apply API | Yes | Internal only | Yes (`apply_update`) |
 | Unique match required | No (first hit) | No (first hit) | **Yes** |
 | Whitespace fuzz | rstrip then strip | rstrip, strip, unicode normalize | No (exact + optional context reduction) |
-| `@@` semantic anchor | Yes | Yes (`change_context`) | Advisory only / ignored for identity |
-| EOF marker | `*** End of File` | Yes | Not yet |
-| Overlap detection | Yes (cursor check) | Sort + apply descending | Yes (occupied ranges) |
-| CRLF preserve | File wins | Mostly LF-oriented split | Preserve LF/CRLF; reject mixed |
+| `@@` semantic anchor | Yes | Yes (`change_context`) | Unique exact cursor constraint |
+| EOF marker | `*** End of File` | Yes | Yes (EOF-prefer exact, then unique forward) |
+| Overlap detection | Yes (cursor check) | Sort + apply descending | Yes (`emit_chunks` forward cursor) |
+| Apply shape | Locate on original → emit | `compute_replacements` → apply | `locate_chunks` → `emit_chunks` |
+| CRLF preserve | File wins | Mostly LF-oriented split | File wins; reject mixed |
 | Transactional multi-file | No (editor loops ops) | No | **Yes** |
 | Create mode | Explicit `mode="create"` | AddFile path | Add File op |
 
-## Inspiration worth porting into `agent-patch`
+## Alignment with `agent-patch`
 
-1. **Layering:** keep “envelope parse → per-file ops → pure `apply_diff(text, hunks)` → commit” as hard boundaries (already close).
-2. **Chunk apply with forward cursor** on the original line list after all matches are known — prefer over mutate-and-rematch when possible; simplifies overlap checks.
-3. **Newline policy from Python tests:** when applying updates, **always restore the file’s newline**; ignore the patch’s CRLF/LF for output.
-4. **Create mode as a dedicated path** that only accepts `+` lines (we do this in the parser; keep engine simple).
-5. **Section chunking:** splitting a single `@@` region into multiple del/ins chunks when context resumes mid-section — useful if we want one hunk header to contain multiple edits (Codex/Python allow this; our parser treats contiguous lines as one hunk already).
-6. **Do not port silent fuzz by default** — but the staged fuzz levels (`0 / 1 / 100`) are a good template if we add `--fuzzy` later with explicit scoring and still require uniqueness at the chosen level.
-7. **EOF preference** for `*** End of File` / eof hunks — small protocol extension aligned with both OpenAI stacks.
-8. **Editor protocol** (`create_file` / `update_file` / `delete_file`) is a clean host abstraction; our `PlannedChange` enum is the Rust analogue.
+1. **Layering:** envelope parse → per-file ops → pure `apply_update` → commit.
+2. **Chunk apply with forward cursor** on the original line list after all matches are known (`locate_chunks` / `emit_chunks`).
+3. **Newline policy from Python tests:** updates restore the file’s newline; patch CRLF/LF does not rewrite file style.
+4. **Create mode** accepts only `+` lines (`Add File`).
+5. **EOF preference** for `*** End of File` (exact end-aligned match first; unique forward fallback; no silent fuzz).
+6. **No silent fuzz by default** — staged fuzz levels (`0 / 1 / 100`) remain a template only if an explicit `--fuzzy` mode appears later, still requiring uniqueness.
+7. **Editor protocol** (`create_file` / `update_file` / `delete_file`) maps to `PlannedChange`; Responses API `ApplyPatchCall` uses headerless per-file `diff` bodies (see [research-next-pass.md](./research-next-pass.md)).
 
 ## What not to copy blindly
 
-- First-match-wins under ambiguity (violates our I5).
-- Accumulating fuzz without surfacing it to the caller (we want stable error codes).
+- First-match-wins under ambiguity (violates unique-exact).
+- Accumulating fuzz without surfacing it to the caller (stable error codes).
 - Non-transactional sequential writes in `WorkspaceEditor.apply_patch`.
-- Allowing absolute paths in the example editor’s resolve path (sandbox path policy is stricter — follow sandbox, not the example).
-
-## Suggested follow-ups for this repo
-
-1. Add CRLF-preservation unit tests mirroring `test_apply_diff.py` (LF patch on CRLF file and reverse).
-2. Refactor `engine/apply.rs` toward “locate all → apply with cursor” like `_apply_chunks`.
-3. Optionally implement `@@ <anchor>` as a **cursor constraint** before unique matching (narrows search window without fuzzy equality).
-4. Document V4A lineage in `docs/protocol.md` (same family as Codex / Agents Python).
+- Allowing absolute paths in the example editor’s resolve path (sandbox path policy is stricter).
