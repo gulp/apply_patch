@@ -240,10 +240,16 @@ fn parse_update_body(
             i += 1;
             let (hunk_lines, next) = parse_hunk_lines(lines, i)?;
             i = next;
+            let mut end_of_file = false;
+            if i < lines.len() && lines[i].text == "*** End of File" {
+                end_of_file = true;
+                i += 1;
+            }
             let hunk = Hunk {
                 lines: hunk_lines,
                 source_span: span,
                 anchor,
+                end_of_file,
             };
             if !hunk.has_change() {
                 return Err(PublicError::new(
@@ -281,9 +287,7 @@ fn parse_hunk_anchor(header: &str) -> Option<String> {
     }
     // Unified-diff numeric hunk header: starts with -<digits>
     let bytes = rest.as_bytes();
-    if bytes.first() == Some(&b'-')
-        && bytes.get(1).map(|b| b.is_ascii_digit()).unwrap_or(false)
-    {
+    if bytes.first() == Some(&b'-') && bytes.get(1).map(|b| b.is_ascii_digit()).unwrap_or(false) {
         return None;
     }
     Some(rest.to_string())
@@ -380,6 +384,18 @@ mod tests {
             err.code,
             ErrorCode::PatchMissingBegin | ErrorCode::PatchTrailingContent
         ));
+    }
+
+    #[test]
+    fn parses_end_of_file_marker() {
+        let patch = "*** Begin Patch\n*** Update File: a.rs\n@@\n-old\n+new\n*** End of File\n*** End Patch\n";
+        let doc = parse_patch(patch).unwrap();
+        match &doc.operations[0] {
+            FileOperation::Update(u) => {
+                assert!(u.hunks[0].end_of_file);
+            }
+            _ => panic!("expected update"),
+        }
     }
 
     #[test]

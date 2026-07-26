@@ -4,9 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AP="${ROOT}/scripts/agent-patch"
-if [[ ! -x "${ROOT}/target/release/agent-patch" && ! -x "${ROOT}/target/debug/agent-patch" ]]; then
-  cargo build --release --manifest-path "${ROOT}/Cargo.toml"
-fi
+# Always refresh the release binary so dogfood does not run a stale build.
+cargo build --release --manifest-path "${ROOT}/Cargo.toml" --quiet
 
 DF="$(mktemp -d /tmp/agent-patch-dogfood.XXXXXX)"
 cleanup() { rm -rf "$DF"; }
@@ -290,6 +289,38 @@ if [[ $ecc -eq 0 && $eca -eq 0 && "$before" == "$mid" && "$outa" == *'"ok": true
   ok TY-check-apply
 else
   bad TY-check-apply "ecc=$ecc eca=$eca"
+fi
+
+# TZ End of File prefer
+cat >"$DF/src/tail_dup.rs" <<'EOF'
+fn early() {
+    let marker = 1;
+}
+fn late() {
+    let marker = 1;
+}
+EOF
+cat >"$DF/tz.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/tail_dup.rs
+@@
+ fn late() {
+-    let marker = 1;
++    let marker = 2;
+ }
+*** End of File
+*** End Patch
+PATCH
+if run_json "$DF/tz.patch" >/tmp/ap-dog-out.json; then
+  early=$(sed -n '/fn early/,/fn late/p' "$DF/src/tail_dup.rs")
+  late=$(sed -n '/fn late/,$p' "$DF/src/tail_dup.rs")
+  if [[ "$early" == *'let marker = 1;'* && "$late" == *'let marker = 2;'* ]]; then
+    ok TZ-end-of-file
+  else
+    bad TZ-end-of-file "wrong location edited"
+  fi
+else
+  bad TZ-end-of-file "$(cat /tmp/ap-dog-out.json)"
 fi
 
 note ""

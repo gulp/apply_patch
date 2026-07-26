@@ -132,6 +132,7 @@ mod tests {
             lines,
             source_span: SourceSpan { line: 2, column: 1 },
             anchor: anchor.map(str::to_string),
+            end_of_file: false,
         }
     }
 
@@ -224,17 +225,11 @@ mod tests {
             &update(vec![
                 hunk(
                     None,
-                    vec![
-                        HunkLine::Delete("b".into()),
-                        HunkLine::Add("B".into()),
-                    ],
+                    vec![HunkLine::Delete("b".into()), HunkLine::Add("B".into())],
                 ),
                 hunk(
                     None,
-                    vec![
-                        HunkLine::Delete("d".into()),
-                        HunkLine::Add("D".into()),
-                    ],
+                    vec![HunkLine::Delete("d".into()), HunkLine::Add("D".into())],
                 ),
             ]),
             "\n",

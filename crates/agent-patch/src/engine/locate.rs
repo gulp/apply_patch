@@ -37,7 +37,14 @@ pub fn locate_chunks(
             search_start = anchor_idx + 1;
         }
 
-        let hit = find_unique_match(file_lines, hunk, hunk_index, &update.path, search_start)?;
+        let hit = find_unique_match(
+            file_lines,
+            hunk,
+            hunk_index,
+            &update.path,
+            search_start,
+            hunk.end_of_file,
+        )?;
         let chunk = LocatedChunk {
             orig_index: hit.start_line,
             del_len: hit.end_line - hit.start_line,
@@ -115,6 +122,7 @@ mod tests {
             lines,
             source_span: SourceSpan { line: 1, column: 1 },
             anchor: anchor.map(str::to_string),
+            end_of_file: false,
         }
     }
 
@@ -124,17 +132,11 @@ mod tests {
         let u = update(vec![
             hunk(
                 None,
-                vec![
-                    HunkLine::Delete("b".into()),
-                    HunkLine::Add("B".into()),
-                ],
+                vec![HunkLine::Delete("b".into()), HunkLine::Add("B".into())],
             ),
             hunk(
                 None,
-                vec![
-                    HunkLine::Delete("d".into()),
-                    HunkLine::Add("D".into()),
-                ],
+                vec![HunkLine::Delete("d".into()), HunkLine::Add("D".into())],
             ),
         ]);
         let chunks = locate_chunks(&file, &u).unwrap();
@@ -150,10 +152,7 @@ mod tests {
         let file = ["hdr", "x", "y", "hdr", "x", "z"];
         let u = update(vec![hunk(
             Some("hdr"),
-            vec![
-                HunkLine::Delete("x".into()),
-                HunkLine::Add("X".into()),
-            ],
+            vec![HunkLine::Delete("x".into()), HunkLine::Add("X".into())],
         )]);
         // Without unique-exact on whole file, "x" is ambiguous; with forward
         // cursor after first "hdr", still two "x"? First hunk has anchor "hdr".
@@ -169,10 +168,7 @@ mod tests {
         let file = ["one", "x", "y", "two", "x", "z"];
         let u = update(vec![hunk(
             Some("two"),
-            vec![
-                HunkLine::Delete("x".into()),
-                HunkLine::Add("X".into()),
-            ],
+            vec![HunkLine::Delete("x".into()), HunkLine::Add("X".into())],
         )]);
         let chunks = locate_chunks(&file, &u).unwrap();
         assert_eq!(chunks[0].orig_index, 4);

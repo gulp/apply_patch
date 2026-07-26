@@ -91,7 +91,9 @@ Outside `apply_update`: `join(plus_lines, "\n")` (+ trailing newline when non-em
 - `diffy::apply` / `flickzeug::apply`
 - Default rstrip/strip/unicode fuzz (Codex `seek_sequence` / Agents fuzz ladder)
 - First-match-wins
-- `*** End of File` until contract enables it
+- `*** Move to:` until contract enables it
+
+`*** End of File` is supported: prefer exact match at `len - old_len`, else unique forward search.
 
 ## Crate map
 

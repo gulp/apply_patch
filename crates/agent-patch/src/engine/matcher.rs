@@ -13,6 +13,10 @@ pub struct MatchHit {
 
 /// Find a unique match for the hunk's old side in `file_lines[search_start..]`.
 ///
+/// When `prefer_eof` is set (`*** End of File`), try an exact match aligned at the
+/// end of the file first (Codex/Agents EOF prefer). If that fails, fall back to the
+/// normal unique-exact forward search from `search_start`.
+///
 /// When context reduction is used, `ins_lines` are reduced by the same leading/trailing
 /// context strips so emit replaces exactly the matched span.
 pub fn find_unique_match(
@@ -21,6 +25,7 @@ pub fn find_unique_match(
     hunk_index: usize,
     path: &str,
     search_start: usize,
+    prefer_eof: bool,
 ) -> Result<MatchHit, PublicError> {
     let old = hunk.old_text_lines();
     let full_ins: Vec<String> = hunk
@@ -30,6 +35,14 @@ pub fn find_unique_match(
         .collect();
 
     if old.is_empty() {
+        if prefer_eof {
+            // Pure insertion at EOF: append at end of file.
+            return Ok(MatchHit {
+                start_line: file_lines.len(),
+                end_line: file_lines.len(),
+                ins_lines: full_ins,
+            });
+        }
         if file_lines.is_empty() && search_start == 0 {
             return Ok(MatchHit {
                 start_line: 0,
@@ -47,6 +60,16 @@ pub fn find_unique_match(
         .with_path(path)
         .with_hunk(hunk_index)
         .with_source(hunk.source_span));
+    }
+
+    if prefer_eof {
+        if let Some(hit) = match_at_eof(file_lines, &old, &full_ins, search_start) {
+            return Ok(hit);
+        }
+        if let Some(hit) = try_context_reduction_at_eof(file_lines, hunk, search_start) {
+            return Ok(hit);
+        }
+        // Fall back to unique forward search (Agents EOF fallback, but unique-exact).
     }
 
     let matches = find_all_matches(file_lines, &old, search_start);
@@ -82,6 +105,72 @@ pub fn find_unique_match(
     .with_hint("Read the current affected region and regenerate the patch from current content."))
 }
 
+fn match_at_eof(
+    file_lines: &[&str],
+    old: &[&str],
+    ins_lines: &[String],
+    search_start: usize,
+) -> Option<MatchHit> {
+    if file_lines.len() < old.len() {
+        return None;
+    }
+    let start = file_lines.len() - old.len();
+    if start < search_start {
+        return None;
+    }
+    if file_lines[start..start + old.len()] == *old {
+        return Some(MatchHit {
+            start_line: start,
+            end_line: start + old.len(),
+            ins_lines: ins_lines.to_vec(),
+        });
+    }
+    None
+}
+
+fn try_context_reduction_at_eof(
+    file_lines: &[&str],
+    hunk: &Hunk,
+    search_start: usize,
+) -> Option<MatchHit> {
+    let old_entries = old_side_entries(hunk);
+    let change_count = old_entries.iter().filter(|(_, is_ctx, _)| !*is_ctx).count();
+    if change_count == 0 {
+        return None;
+    }
+    let ctx_count = old_entries.iter().filter(|(_, is_ctx, _)| *is_ctx).count();
+    let mut lead = 0usize;
+    let mut trail = 0usize;
+    let mut prefer_lead = true;
+    for _ in 0..ctx_count {
+        let can_lead = can_strip_leading(&old_entries, lead, trail);
+        let can_trail = can_strip_trailing(&old_entries, lead, trail);
+        if prefer_lead && can_lead {
+            lead += 1;
+            prefer_lead = false;
+        } else if can_trail {
+            trail += 1;
+            prefer_lead = true;
+        } else if can_lead {
+            lead += 1;
+            prefer_lead = false;
+        } else {
+            break;
+        }
+        let Some(slice) = strip_old_edges(&old_entries, lead, trail) else {
+            break;
+        };
+        let needle: Vec<&str> = slice.iter().map(|(_, _, t)| *t).collect();
+        let Some(ins) = reduce_new_side(hunk, lead, trail) else {
+            break;
+        };
+        if let Some(hit) = match_at_eof(file_lines, &needle, &ins, search_start) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
 fn ambiguous(hunk: &Hunk, hunk_index: usize, path: &str) -> PublicError {
     PublicError::new(
         ErrorCode::HunkAmbiguous,
@@ -96,7 +185,11 @@ fn ambiguous(hunk: &Hunk, hunk_index: usize, path: &str) -> PublicError {
     .with_hint("Add more unique surrounding context and regenerate the patch.")
 }
 
-fn find_all_matches(file_lines: &[&str], needle: &[&str], search_start: usize) -> Vec<(usize, usize)> {
+fn find_all_matches(
+    file_lines: &[&str],
+    needle: &[&str],
+    search_start: usize,
+) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     if needle.is_empty() {
         return out;
@@ -149,8 +242,7 @@ fn try_context_reduction(
         } else {
             break;
         }
-        if let Some(hit) =
-            match_reduced(file_lines, hunk, &old_entries, lead, trail, search_start)
+        if let Some(hit) = match_reduced(file_lines, hunk, &old_entries, lead, trail, search_start)
         {
             return Some(hit);
         }
@@ -280,6 +372,7 @@ mod tests {
             lines,
             source_span: SourceSpan { line: 1, column: 1 },
             anchor: None,
+            end_of_file: false,
         }
     }
 
@@ -291,7 +384,7 @@ mod tests {
             HunkLine::Delete("c".into()),
             HunkLine::Add("d".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f", 0).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 0, false).unwrap();
         assert_eq!(m.start_line, 1);
         assert_eq!(m.end_line, 3);
         assert_eq!(m.ins_lines, vec!["b".to_string(), "d".to_string()]);
@@ -304,7 +397,7 @@ mod tests {
             HunkLine::Delete("x".into()),
             HunkLine::Add("z".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0).unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 
@@ -315,7 +408,7 @@ mod tests {
             HunkLine::Delete("missing".into()),
             HunkLine::Add("x".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0).unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkNotFound);
     }
 
@@ -326,7 +419,7 @@ mod tests {
             HunkLine::Delete("x".into()),
             HunkLine::Add("X".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f", 2).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 2, false).unwrap();
         assert_eq!(m.start_line, 2);
     }
 
@@ -339,7 +432,7 @@ mod tests {
             HunkLine::Delete("target".into()),
             HunkLine::Add("done".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f", 0).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 0, false).unwrap();
         assert_eq!(m.start_line, 1);
         assert_eq!(m.end_line, 2);
         assert_eq!(m.ins_lines, vec!["done".to_string()]);
@@ -353,7 +446,28 @@ mod tests {
             HunkLine::Delete("target".into()),
             HunkLine::Add("done".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0).unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
+    }
+
+    #[test]
+    fn eof_prefer_picks_trailing_duplicate() {
+        let file = ["first", "second", "first", "second"];
+        let h = Hunk {
+            lines: vec![
+                HunkLine::Context("first".into()),
+                HunkLine::Delete("second".into()),
+                HunkLine::Add("second updated".into()),
+            ],
+            source_span: SourceSpan { line: 1, column: 1 },
+            anchor: None,
+            end_of_file: true,
+        };
+        let m = find_unique_match(&file, &h, 0, "f", 0, true).unwrap();
+        assert_eq!(m.start_line, 2);
+        assert_eq!(
+            m.ins_lines,
+            vec!["first".to_string(), "second updated".to_string()]
+        );
     }
 }

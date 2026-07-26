@@ -45,7 +45,7 @@ CLI (clap) → app::run
 2. No default rstrip/strip/unicode fuzz (optional `--fuzzy` is v1.1+ only, still unique).
 3. Full in-memory apply then transactional commit + rollback (vs Codex/Agents sequential writes).
 4. Add never overwrites.
-5. `*** Move to:` and `*** End of File` deferred (protocol-compatible later; see [`../research-next-pass.md`](../research-next-pass.md)).
+5. `*** Move to:` deferred (protocol-compatible later; see [`../research-next-pass.md`](../research-next-pass.md)). `*** End of File` is supported (EOF-prefer exact locate).
 6. Observational diffs via `similar` only.
 
 ## Data flow
@@ -77,14 +77,13 @@ AST transforms; fuzzy default; Git stage/commit; MCP requirement; binary files; 
 - Feeding V4A text to `diffy::apply` / `flickzeug::apply` (unified-diff APIs).
 - Rematching against a buffer mutated after each hunk (prefer locate-all → emit).
 - Claiming multi-file FS atomicity without rollback (ordinary FS has none).
-- Implementing Move/EOF without contract bump and commit-order tests.
+- Implementing Move without contract bump and commit-order tests (see [`move.md`](move.md)).
 
 ## Deferred (fact-backed backlog)
 
 | Item | Why it matters |
 | --- | --- |
-| `*** End of File` | In every major V4A grammar; EOF-preferring locate |
-| `*** Move to:` | Codex/Agents/OpenClaw/OpenCode; needs collision + rollback design |
-| Locate-all → cursor emit refactor | Matches Agents/Codex replacement model; simplifies overlap |
-| Codex scenario corpus (exact-only subset) | Shared dialect tests |
+| `*** Move to:` | Codex/Agents/OpenClaw/OpenCode; collision + rollback — [`move.md`](move.md) |
 | Optional path list helper | OpenClaw-style preflight for harnesses |
+| Streaming patch parse | Codex `streaming_parser.rs`; only if >`max_patch_bytes` streaming is required |
+| Explicit `--fuzzy` | Unique match at chosen fuzz level; never default |

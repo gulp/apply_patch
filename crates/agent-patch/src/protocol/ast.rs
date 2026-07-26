@@ -66,6 +66,8 @@ pub struct Hunk {
     pub source_span: SourceSpan,
     /// Exact line from `@@ <anchor>`; `None` for bare `@@` or unified-diff numeric headers.
     pub anchor: Option<String>,
+    /// True when the hunk ends with `*** End of File` (EOF-prefer locate).
+    pub end_of_file: bool,
 }
 
 impl Hunk {

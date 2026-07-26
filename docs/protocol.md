@@ -39,9 +39,9 @@ Hunks begin with `@@` or `@@ <anchor>`:
 - `@@ <anchor>` advances the search cursor to a unique exact line equal to `<anchor>`, then locates the hunk body.
 - Unified-diff numeric forms such as `@@ -1,3 +1,4 @@` are ignored as line-number math; the hunk body still matches exactly.
 
-Each hunk needs at least one `-` or `+` line. Context lines start with a single space. The target must be an existing regular UTF-8 text file.
+Each hunk needs at least one `-` or `+` line. Context lines start with a single space. An optional trailing `*** End of File` marks EOF-prefer locate for that hunk. The target must be an existing regular UTF-8 text file.
 
-Matching is unique and exact on the file’s logical lines (LF-normalized for comparison). The file’s LF or CRLF style is preserved on emit. Mixed line endings on update are rejected. Empty no-op hunks and no-effect updates fail.
+Matching is unique and exact on the file’s logical lines (LF-normalized for comparison), except EOF-prefer which tries the end-aligned match first. The file’s LF or CRLF style is preserved on emit. Mixed line endings on update are rejected. Empty no-op hunks and no-effect updates fail.
 
 ## Delete File
 

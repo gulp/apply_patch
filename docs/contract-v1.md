@@ -12,9 +12,10 @@ Deferred to v1.1: `Move File`.
 
 1. Exact full hunk-context match (unique).
 2. `@@` / `@@ <anchor>` constrains the search cursor: bare `@@` is a section break; `@@ <text>` requires a unique exact line match for `<text>` before locating the hunk body. Unified-diff numeric `@@ -l,s +l,s @@` markers are ignored as location math.
-3. Controlled edge-context reduction: strip one leading context line, then one trailing, stop at minimum of one remaining old line; accept only if unique.
-4. Zero matches → `HUNK_NOT_FOUND`.
-5. Multiple matches → `HUNK_AMBIGUOUS`.
+3. `*** End of File` on a hunk: prefer an exact match aligned at EOF (`len - old_len`); if that fails, fall back to unique-exact forward search from the cursor (no whitespace/unicode fuzz).
+4. Controlled edge-context reduction: strip one leading context line, then one trailing, stop at minimum of one remaining old line; accept only if unique.
+5. Zero matches → `HUNK_NOT_FOUND`.
+6. Multiple matches → `HUNK_AMBIGUOUS`.
 
 No fuzzy, whitespace-normalized, or first-match-wins behavior.
 

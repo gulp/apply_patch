@@ -46,7 +46,7 @@ scripts/agent-patch   # release → debug → cargo run
 
 - Scope changes tightly; no drive-by refactors or unsolicited docs.
 - Commit only when asked.
-- Honor `docs/contract-v1.md` — no Move/EOF until the contract says so.
+- Honor `docs/contract-v1.md` — no Move until the contract says so.
 - Match existing module and `ErrorCode` style.
 - Docs describe current state (no “we added / now changed” voice).
 - Product docs → `README.md`; this file stays operational.
