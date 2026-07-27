@@ -293,7 +293,7 @@ scripts/              # agent-patch, test, lint, dogfood, bench, soak
 docs/                 # protocol, contracts, errors, design, research, schemas
 ```
 
-Design: [docs/design/](docs/design/). Threat model: [docs/threat-model.md](docs/threat-model.md). Active plan: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Seam ground truth: [docs/research-post-v1-seams.md](docs/research-post-v1-seams.md). Backlog: [docs/research-next-pass.md](docs/research-next-pass.md). Archived greenfield plan: [docs/archive/2026-07-greenfield-implementation-plan.md](docs/archive/2026-07-greenfield-implementation-plan.md).
+Design: [docs/design/](docs/design/). Threat model: [docs/threat-model.md](docs/threat-model.md). Plan stub: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Seam ground truth: [docs/research-post-v1-seams.md](docs/research-post-v1-seams.md). Backlog: [docs/research-next-pass.md](docs/research-next-pass.md). Archived plans: [docs/archive/](docs/archive/).
 
 ## License
 

@@ -11,6 +11,7 @@
 | [move.md](./move.md) | Deferred Move File commit-order rules |
 | [seams.md](./seams.md) | Module boundaries and tests |
 | [stack.txt](./stack.txt) | Crates in / out of the apply path |
+| [robot-cli.md](./robot-cli.md) | Machine mode, argv normalize, coach/examples |
 
 **Thesis:** Parse the V4A envelope once; transform each file as pure text with unique matching (`locate_chunks` → `emit_chunks`); commit through a durable journal and content-addressed before-images. Never apply via `diffy`/`flickzeug`; never silent first-match fuzzy fallback; never hard-link shadows.
 

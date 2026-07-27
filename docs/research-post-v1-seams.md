@@ -1,6 +1,6 @@
 # Ground truth: post-v1 plan seams
 
-Probed 2026-07-27 via `opensrc` + grep-app against live upstream trees. Use this when implementing `IMPLEMENTATION_PLAN.md` Phases 1–8 so interfaces stay aligned with real code—not folklore.
+Probed 2026-07-27 via `opensrc` + grep-app against live upstream trees. Written against the post-v1 plan (now [archive/2026-07-27-post-v1-implementation-plan.md](./archive/2026-07-27-post-v1-implementation-plan.md)); keep using it so interfaces stay aligned with real upstream code—not folklore.
 
 ## Cache paths
 

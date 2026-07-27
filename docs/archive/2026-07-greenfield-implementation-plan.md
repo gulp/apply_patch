@@ -1,6 +1,6 @@
 # `agent-patch` — Implementation Plan
 
-Status: **Archived** greenfield v1 plan (completed). Current behavior: [README.md](../../README.md), [docs/contract-v1.md](../contract-v1.md), [docs/protocol.md](../protocol.md), [docs/design/](../design/). Active plan: [IMPLEMENTATION_PLAN.md](../../IMPLEMENTATION_PLAN.md).
+Status: **Archived** greenfield v1 plan (completed). Current behavior: [README.md](../../README.md), [docs/contract-v1.md](../contract-v1.md), [docs/protocol.md](../protocol.md), [docs/design/](../design/). Post-v1 plan (also archived): [2026-07-27-post-v1-implementation-plan.md](./2026-07-27-post-v1-implementation-plan.md). Root stub: [IMPLEMENTATION_PLAN.md](../../IMPLEMENTATION_PLAN.md).
 Primary users: Coding agents operating through shell-capable harnesses
 Primary interface: Repo-local command-line executable
 Implementation language: Rust

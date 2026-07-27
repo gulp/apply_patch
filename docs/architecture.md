@@ -25,7 +25,8 @@ Invariants: root confinement; no mutation before full in-memory plan; unique hun
 | Threat model | [threat-model.md](./threat-model.md) |
 | Platform capabilities (Linux/macOS) | [platform-capabilities.md](./platform-capabilities.md) |
 | Codex fixture subset | `crates/agent-patch/tests/fixtures/codex-scenarios/` |
-| Active plan | [../IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) |
+| Plan stub / next topic | [../IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) |
+| Archived post-v1 plan | [archive/2026-07-27-post-v1-implementation-plan.md](./archive/2026-07-27-post-v1-implementation-plan.md) |
 | Backlog | [research-next-pass.md](./research-next-pass.md) |
 | Seam ground truth | [research-post-v1-seams.md](./research-post-v1-seams.md) |
 | Archived greenfield plan | [archive/2026-07-greenfield-implementation-plan.md](./archive/2026-07-greenfield-implementation-plan.md) |

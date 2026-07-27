@@ -2,7 +2,7 @@
 
 Frozen decisions for post-v1 features. v1 matching/ops remain unless explicitly superseded. Changing any field requires an explicit contract bump.
 
-Companion: [contract-v1.md](./contract-v1.md), [errors.md](./errors.md), [schemas/](./schemas/), [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) §20.
+Companion: [contract-v1.md](./contract-v1.md), [errors.md](./errors.md), [schemas/](./schemas/), archived freezes: [archive/2026-07-27-post-v1-implementation-plan.md](./archive/2026-07-27-post-v1-implementation-plan.md) §20.
 
 Ground truth for interfaces and deltas: [research-post-v1-seams.md](./research-post-v1-seams.md) (Codex `seek_sequence`, Agents `Chunk`/`apply_diff`, flickzeug unified-only, verify process-group patterns).
 
