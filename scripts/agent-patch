@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${ROOT}/target/release/agent-patch"
-DEBUG_BIN="${ROOT}/target/debug/agent-patch"
+RELEASE="${ROOT}/target/release/agent-patch"
+DEBUG="${ROOT}/target/debug/agent-patch"
 
-if [[ -x "$BIN" ]]; then
-  exec "$BIN" "$@"
-elif [[ -x "$DEBUG_BIN" ]]; then
-  exec "$DEBUG_BIN" "$@"
-else
-  exec cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" --bin agent-patch -- "$@"
+pick=""
+if [[ -x "$RELEASE" && -x "$DEBUG" ]]; then
+  # Prefer the newer artifact so a stale release cannot mask a fresh debug build.
+  if [[ "$RELEASE" -nt "$DEBUG" ]]; then
+    pick="$RELEASE"
+  else
+    pick="$DEBUG"
+  fi
+elif [[ -x "$RELEASE" ]]; then
+  pick="$RELEASE"
+elif [[ -x "$DEBUG" ]]; then
+  pick="$DEBUG"
 fi
+
+if [[ -n "$pick" ]]; then
+  exec "$pick" "$@"
+fi
+exec cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" --bin agent-patch -- "$@"
