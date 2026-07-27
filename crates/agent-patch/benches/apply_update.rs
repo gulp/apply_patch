@@ -14,6 +14,7 @@ fn sample_update(n_lines: usize) -> (String, UpdateFile) {
     let update = UpdateFile {
         path: "bench.txt".into(),
         source_span: SourceSpan { line: 1, column: 1 },
+        hash_pin: None,
         hunks: vec![Hunk {
             lines: vec![
                 HunkLine::Context(format!("line{}", mid - 1)),

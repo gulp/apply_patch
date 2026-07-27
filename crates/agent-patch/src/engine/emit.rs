@@ -54,6 +54,21 @@ pub fn emit_chunks(
 mod tests {
     use super::*;
     use crate::engine::locate::LocatedChunk;
+    use crate::oracle::{MatchEvidence, MatchLevel};
+
+    fn ev(hunk_index: usize) -> MatchEvidence {
+        MatchEvidence {
+            path: "f".into(),
+            hunk_index,
+            accepted_level: MatchLevel::Exact,
+            candidate_count: 1,
+            retained_context_lead: 0,
+            retained_context_trail: 0,
+            used_anchor: false,
+            used_eof: false,
+            nearby_twins: 0,
+        }
+    }
 
     #[test]
     fn emits_replacement_and_tail() {
@@ -63,6 +78,7 @@ mod tests {
             del_len: 1,
             ins_lines: vec!["B".into()],
             hunk_index: 0,
+            evidence: ev(0),
         }];
         let out = emit_chunks(&file, &chunks, "f").unwrap();
         assert_eq!(out, vec!["a", "B", "c"]);
@@ -77,12 +93,14 @@ mod tests {
                 del_len: 1,
                 ins_lines: vec!["B".into()],
                 hunk_index: 0,
+                evidence: ev(0),
             },
             LocatedChunk {
                 orig_index: 1,
                 del_len: 1,
                 ins_lines: vec!["Z".into()],
                 hunk_index: 1,
+                evidence: ev(1),
             },
         ];
         let err = emit_chunks(&file, &chunks, "f").unwrap_err();

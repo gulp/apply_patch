@@ -2,8 +2,9 @@
 
 use super::diff_summary::{diff_line_counts, DiffCounts};
 use super::emit::emit_chunks;
-use super::locate::locate_chunks;
+use super::locate::locate_chunks_with;
 use crate::error::{ErrorCode, PublicError};
+use crate::match_opts::MatchOptions;
 use crate::protocol::ast::UpdateFile;
 
 #[derive(Debug, Clone)]
@@ -21,9 +22,19 @@ pub fn apply_update(
     newline: &str,
     final_newline: bool,
 ) -> Result<AppliedText, PublicError> {
+    apply_update_with(base, update, newline, final_newline, MatchOptions::default())
+}
+
+pub fn apply_update_with(
+    base: &str,
+    update: &UpdateFile,
+    newline: &str,
+    final_newline: bool,
+    opts: MatchOptions,
+) -> Result<AppliedText, PublicError> {
     let lines = split_content_lines(base);
     let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-    let chunks = locate_chunks(&line_refs, update)?;
+    let chunks = locate_chunks_with(&line_refs, update, opts)?;
     let new_lines = emit_chunks(&line_refs, &chunks, &update.path)?;
 
     let text = join_lines(&new_lines, newline, final_newline);
@@ -124,6 +135,7 @@ mod tests {
             path: "f".into(),
             source_span: SourceSpan { line: 1, column: 1 },
             hunks,
+            hash_pin: None,
         }
     }
 

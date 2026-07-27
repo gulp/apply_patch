@@ -1,10 +1,13 @@
 //! Patch planner — pairs operations with applied in-memory results.
 
-use crate::engine::{apply_update, DiffCounts};
+use crate::engine::{apply_update_with, locate_chunks_with, unified_diff, DiffCounts};
 use crate::error::{ContentFingerprint, ErrorCode, NewlineStyle, PublicError};
+use crate::match_opts::{enforce_risk, MatchOptions};
+use crate::oracle::MatchEvidence;
 use crate::path_policy::{CanonicalRoot, RepoPath};
 use crate::protocol::ast::FileOperation;
 use crate::snapshot::{FileSnapshot, FileState, PresentFile};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -13,6 +16,8 @@ pub struct PatchPlan {
     pub entries: Vec<PlannedChange>,
     pub base_fingerprints: BTreeMap<RepoPath, Option<ContentFingerprint>>,
     pub summary: PlanSummary,
+    pub match_evidence: Vec<MatchEvidence>,
+    pub plan_digest: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +76,7 @@ pub struct PlannedModify {
     pub operation_index: usize,
     pub hunks: usize,
     pub counts: DiffCounts,
+    pub evidence: Vec<MatchEvidence>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,13 +88,45 @@ pub struct PlannedRemove {
     pub lines_deleted: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ExecutionPlanJson {
+    pub version: u32,
+    pub root: String,
+    pub plan_digest: String,
+    pub entries: Vec<ExecutionPlanEntryJson>,
+    pub match_evidence: Vec<MatchEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExecutionPlanEntryJson {
+    pub path: String,
+    pub operation: String,
+    pub before_blake3: Option<String>,
+    pub after_blake3: Option<String>,
+    pub hunks: usize,
+    pub lines_added: usize,
+    pub lines_deleted: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unified_diff: Option<String>,
+}
+
 pub fn build_plan(
     root: CanonicalRoot,
     ops: &[(usize, RepoPath, &FileOperation)],
     snapshots: &BTreeMap<RepoPath, FileSnapshot>,
 ) -> Result<PatchPlan, PublicError> {
+    build_plan_with(root, ops, snapshots, MatchOptions::default())
+}
+
+pub fn build_plan_with(
+    root: CanonicalRoot,
+    ops: &[(usize, RepoPath, &FileOperation)],
+    snapshots: &BTreeMap<RepoPath, FileSnapshot>,
+    opts: MatchOptions,
+) -> Result<PatchPlan, PublicError> {
     let mut entries = Vec::new();
     let mut base_fingerprints = BTreeMap::new();
+    let mut match_evidence = Vec::new();
     let mut summary = PlanSummary {
         files_total: ops.len(),
         ..Default::default()
@@ -118,6 +156,21 @@ pub fn build_plan(
                     FileState::Present(p) => p,
                     FileState::Missing => unreachable!("validated"),
                 };
+                if let Some(pin) = update.hash_pin.as_deref() {
+                    if present.fingerprint.hex() != pin {
+                        return Err(PublicError::new(
+                            ErrorCode::HashPinMismatch,
+                            format!(
+                                "Hash pin mismatch for {}: expected blake3 {pin}, got {}",
+                                repo_path,
+                                present.fingerprint.hex()
+                            ),
+                        )
+                        .with_path(repo_path.as_str())
+                        .with_operation(*index)
+                        .with_source(update.source_span));
+                    }
+                }
                 base_fingerprints.insert(repo_path.clone(), Some(present.fingerprint.clone()));
 
                 let newline = match present.newline_style {
@@ -132,9 +185,16 @@ pub fn build_plan(
                     }
                 };
 
-                // Preserve BOM: if base starts with BOM, ensure result keeps it
-                let applied = apply_update(&present.text, update, newline, present.final_newline)
+                let applied =
+                    apply_update_with(&present.text, update, newline, present.final_newline, opts)
+                        .map_err(|e| e.with_operation(*index))?;
+
+                let lines = crate::engine::split_content_lines(&present.text);
+                let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                let chunks = locate_chunks_with(&line_refs, update, opts)
                     .map_err(|e| e.with_operation(*index))?;
+                let ev: Vec<_> = chunks.into_iter().map(|c| c.evidence).collect();
+                match_evidence.extend(ev.iter().cloned());
 
                 let mut after_text = applied.text;
                 if present.text.starts_with('\u{FEFF}') && !after_text.starts_with('\u{FEFF}') {
@@ -156,6 +216,7 @@ pub fn build_plan(
                     operation_index: *index,
                     hunks: applied.hunks_applied,
                     counts: applied.counts,
+                    evidence: ev,
                 }));
             }
             FileOperation::Delete(_) => {
@@ -178,13 +239,121 @@ pub fn build_plan(
         }
     }
 
-    // Deterministic lexicographic order by path
+    enforce_risk(&match_evidence, opts.risk)?;
+
     entries.sort_by(|a, b| a.path().cmp(b.path()));
+    let plan_digest = compute_plan_digest(&root, &entries);
 
     Ok(PatchPlan {
         root,
         entries,
         base_fingerprints,
         summary,
+        match_evidence,
+        plan_digest,
     })
+}
+
+fn compute_plan_digest(root: &CanonicalRoot, entries: &[PlannedChange]) -> String {
+    let mut owned: Vec<serde_json::Value> = Vec::new();
+    for e in entries {
+        match e {
+            PlannedChange::Create(c) => {
+                owned.push(serde_json::json!({
+                    "path": c.path.as_str(),
+                    "operation": "add",
+                    "before_blake3": null,
+                    "after_blake3": c.after_hash.hex(),
+                }));
+            }
+            PlannedChange::Modify(m) => {
+                owned.push(serde_json::json!({
+                    "path": m.path.as_str(),
+                    "operation": "update",
+                    "before_blake3": m.before.fingerprint.hex(),
+                    "after_blake3": m.after_hash.hex(),
+                }));
+            }
+            PlannedChange::Remove(r) => {
+                owned.push(serde_json::json!({
+                    "path": r.path.as_str(),
+                    "operation": "delete",
+                    "before_blake3": r.before.fingerprint.hex(),
+                    "after_blake3": null,
+                }));
+            }
+        }
+    }
+    let canonical = serde_json::json!({
+        "version": 2,
+        "root": root.path.display().to_string(),
+        "entries": owned,
+    });
+    let bytes = serde_json::to_vec(&canonical).expect("digest json");
+    ContentFingerprint::blake3(&bytes).labeled_hex()
+}
+
+pub fn execution_plan_json(plan: &PatchPlan, include_diffs: bool) -> ExecutionPlanJson {
+    let entries = plan
+        .entries
+        .iter()
+        .map(|e| match e {
+            PlannedChange::Create(c) => ExecutionPlanEntryJson {
+                path: c.path.as_str().to_string(),
+                operation: "add".into(),
+                before_blake3: None,
+                after_blake3: Some(c.after_hash.hex()),
+                hunks: 0,
+                lines_added: c.lines_added,
+                lines_deleted: 0,
+                unified_diff: if include_diffs {
+                    let after = String::from_utf8_lossy(&c.bytes);
+                    Some(unified_diff(c.path.as_str(), "", &after))
+                } else {
+                    None
+                },
+            },
+            PlannedChange::Modify(m) => ExecutionPlanEntryJson {
+                path: m.path.as_str().to_string(),
+                operation: "update".into(),
+                before_blake3: Some(m.before.fingerprint.hex()),
+                after_blake3: Some(m.after_hash.hex()),
+                hunks: m.hunks,
+                lines_added: m.counts.lines_added,
+                lines_deleted: m.counts.lines_deleted,
+                unified_diff: if include_diffs {
+                    let after = String::from_utf8_lossy(&m.after_bytes);
+                    Some(unified_diff(
+                        m.path.as_str(),
+                        &m.before.text,
+                        &after,
+                    ))
+                } else {
+                    None
+                },
+            },
+            PlannedChange::Remove(r) => ExecutionPlanEntryJson {
+                path: r.path.as_str().to_string(),
+                operation: "delete".into(),
+                before_blake3: Some(r.before.fingerprint.hex()),
+                after_blake3: None,
+                hunks: 0,
+                lines_added: 0,
+                lines_deleted: r.lines_deleted,
+                unified_diff: if include_diffs {
+                    Some(unified_diff(r.path.as_str(), &r.before.text, ""))
+                } else {
+                    None
+                },
+            },
+        })
+        .collect();
+
+    ExecutionPlanJson {
+        version: 2,
+        root: plan.root.path.display().to_string(),
+        plan_digest: plan.plan_digest.clone(),
+        entries,
+        match_evidence: plan.match_evidence.clone(),
+    }
 }

@@ -1,6 +1,8 @@
 //! Human and JSON diagnostics.
 
 use crate::error::PublicError;
+use crate::oracle::CandidateSpan;
+use crate::plan::ExecutionPlanJson;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -9,8 +11,18 @@ pub struct JsonSuccess {
     pub ok: bool,
     pub mode: String,
     pub root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
     pub summary: JsonSummary,
     pub files: Vec<JsonFileResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<ExecutionPlanJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<crate::verify::VerifyReport>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub already_applied: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +70,12 @@ pub struct JsonErrorBody {
     pub source: Option<JsonSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_patch: Option<String>,
+    pub root_changed: bool,
+    pub recovery_required: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,8 +85,13 @@ pub struct JsonSource {
 }
 
 pub fn emit_error_json(err: &PublicError) -> String {
+    let version = if err.candidates.is_empty() && err.repair_patch.is_none() {
+        1
+    } else {
+        2
+    };
     let body = JsonErrorEnvelope {
-        version: 1,
+        version,
         ok: false,
         error: JsonErrorBody {
             code: err.code.as_str().to_string(),
@@ -82,6 +105,10 @@ pub fn emit_error_json(err: &PublicError) -> String {
                 column: s.column,
             }),
             hint: err.hint.clone(),
+            candidates: err.candidates.clone(),
+            repair_patch: err.repair_patch.clone(),
+            root_changed: err.root_changed,
+            recovery_required: err.recovery_required,
         },
     };
     serde_json::to_string_pretty(&body).unwrap_or_else(|_| {
@@ -103,14 +130,22 @@ pub fn emit_error_human(err: &PublicError) -> String {
     if let Some(s) = err.source {
         out.push_str(&format!("\n  source: {}:{}", s.line, s.column));
     }
+    if !err.candidates.is_empty() {
+        out.push_str(&format!("\n  candidates: {}", err.candidates.len()));
+        for (i, c) in err.candidates.iter().take(3).enumerate() {
+            out.push_str(&format!(
+                "\n  candidate[{i}] lines {}..{}:\n{}",
+                c.start_line, c.end_line, c.excerpt
+            ));
+        }
+    }
     if let Some(hint) = &err.hint {
         out.push_str(&format!("\n  hint: {hint}"));
     }
     out
 }
 
-pub fn emit_success_human(summary: &JsonSummary, check: bool) -> String {
-    let mode = if check { "check" } else { "apply" };
+pub fn emit_success_human(summary: &JsonSummary, mode: &str) -> String {
     format!(
         "{mode} ok: {} file(s) ({} added, {} updated, {} deleted); +{} -{} lines; {} hunk(s); {} ms",
         summary.files_total,

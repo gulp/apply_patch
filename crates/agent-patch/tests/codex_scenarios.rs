@@ -48,6 +48,10 @@ fn collect_files(root: &Path) -> Vec<(String, Vec<u8>)> {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
+            // Journal / object store is not part of scenario expected trees.
+            if entry.file_name() == ".agent-patch" {
+                continue;
+            }
             if entry.file_type().unwrap().is_dir() {
                 walk(&path, prefix, out);
             } else if entry.file_type().unwrap().is_file() {

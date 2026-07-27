@@ -96,12 +96,15 @@ fn parse_lines(lines: &[RawLine<'_>]) -> Result<PatchDocument, PublicError> {
                 column: 1,
             };
             i += 1;
+            let (hash_pin, next) = parse_optional_hash_pin(lines, i)?;
+            i = next;
             let (hunks, next) = parse_update_body(lines, i)?;
             i = next;
             operations.push(FileOperation::Update(UpdateFile {
                 path: path.to_string(),
                 hunks,
                 source_span: span,
+                hash_pin,
             }));
         } else if let Some(path) = line.text.strip_prefix("*** Delete File: ") {
             let span = SourceSpan {
@@ -176,6 +179,46 @@ fn parse_lines(lines: &[RawLine<'_>]) -> Result<PatchDocument, PublicError> {
     }
 
     Ok(PatchDocument { operations })
+}
+
+fn parse_optional_hash_pin(
+    lines: &[RawLine<'_>],
+    mut i: usize,
+) -> Result<(Option<String>, usize), PublicError> {
+    if i >= lines.len() {
+        return Ok((None, i));
+    }
+    let text = lines[i].text;
+    if let Some(rest) = text.strip_prefix("*** Hash: ") {
+        let rest = rest.trim();
+        let hex = if let Some(h) = rest.strip_prefix("blake3 ") {
+            h.trim()
+        } else if let Some(h) = rest.strip_prefix("blake3:") {
+            h.trim()
+        } else {
+            return Err(PublicError::new(
+                ErrorCode::MalformedHunk,
+                format!("Hash pin must be `blake3 <hex>`, found: {text:?}"),
+            )
+            .with_source(SourceSpan {
+                line: lines[i].line_no,
+                column: 1,
+            }));
+        };
+        if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(PublicError::new(
+                ErrorCode::MalformedHunk,
+                format!("Hash pin hex must be 64 hex chars, found: {hex:?}"),
+            )
+            .with_source(SourceSpan {
+                line: lines[i].line_no,
+                column: 1,
+            }));
+        }
+        i += 1;
+        return Ok((Some(hex.to_ascii_lowercase()), i));
+    }
+    Ok((None, i))
 }
 
 fn parse_add_body(lines: &[RawLine<'_>], mut i: usize) -> Result<(String, usize), PublicError> {

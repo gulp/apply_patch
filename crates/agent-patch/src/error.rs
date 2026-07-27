@@ -38,6 +38,20 @@ pub enum ErrorCode {
     InternalError,
     InputError,
     DuplicatePath,
+    HashPinMismatch,
+    RootLocked,
+    RecoveryRequired,
+    RecoveryAmbiguous,
+    VerifyFailed,
+    VerifyTimeout,
+    VerifySignalled,
+    RiskRefused,
+    PartiallyApplied,
+    ReceiptInvalid,
+    ReceiptObjectMissing,
+    RevertStale,
+    ShadowLimitExceeded,
+    MatchWorkLimit,
 }
 
 impl ErrorCode {
@@ -74,6 +88,20 @@ impl ErrorCode {
             Self::InternalError => "INTERNAL_ERROR",
             Self::InputError => "INPUT_ERROR",
             Self::DuplicatePath => "DUPLICATE_PATH",
+            Self::HashPinMismatch => "HASH_PIN_MISMATCH",
+            Self::RootLocked => "ROOT_LOCKED",
+            Self::RecoveryRequired => "RECOVERY_REQUIRED",
+            Self::RecoveryAmbiguous => "RECOVERY_AMBIGUOUS",
+            Self::VerifyFailed => "VERIFY_FAILED",
+            Self::VerifyTimeout => "VERIFY_TIMEOUT",
+            Self::VerifySignalled => "VERIFY_SIGNALLED",
+            Self::RiskRefused => "RISK_REFUSED",
+            Self::PartiallyApplied => "PARTIALLY_APPLIED",
+            Self::ReceiptInvalid => "RECEIPT_INVALID",
+            Self::ReceiptObjectMissing => "RECEIPT_OBJECT_MISSING",
+            Self::RevertStale => "REVERT_STALE",
+            Self::ShadowLimitExceeded => "SHADOW_LIMIT_EXCEEDED",
+            Self::MatchWorkLimit => "MATCH_WORK_LIMIT",
         }
     }
 
@@ -84,7 +112,12 @@ impl ErrorCode {
             | Self::HunkOverlap
             | Self::PatchNoEffect
             | Self::FileAlreadyExists
-            | Self::FileNotFound => 1,
+            | Self::FileNotFound
+            | Self::VerifyFailed
+            | Self::VerifyTimeout
+            | Self::VerifySignalled
+            | Self::RiskRefused
+            | Self::PartiallyApplied => 1,
             Self::PatchMissingBegin
             | Self::PatchMissingEnd
             | Self::PatchEmpty
@@ -95,19 +128,29 @@ impl ErrorCode {
             | Self::InvalidUtf8
             | Self::MixedLineEndings
             | Self::InputError
-            | Self::DuplicatePath => 2,
+            | Self::DuplicatePath
+            | Self::ReceiptInvalid => 2,
             Self::IoError | Self::AtomicCommitFailed => 3,
             Self::InvalidPath
             | Self::PathOutsideRoot
             | Self::SymlinkEscape
             | Self::PathCollision
             | Self::NotRegularFile => 4,
-            Self::ConcurrentModification => 5,
-            Self::RollbackFailed | Self::InternalError => 6,
+            Self::ConcurrentModification
+            | Self::HashPinMismatch
+            | Self::RootLocked
+            | Self::RevertStale => 5,
+            Self::RollbackFailed
+            | Self::InternalError
+            | Self::RecoveryRequired
+            | Self::RecoveryAmbiguous
+            | Self::ReceiptObjectMissing => 6,
             Self::LimitPatchBytes
             | Self::LimitFileBytes
             | Self::LimitFileCount
-            | Self::LimitHunkCount => 7,
+            | Self::LimitHunkCount
+            | Self::ShadowLimitExceeded
+            | Self::MatchWorkLimit => 7,
         }
     }
 
@@ -116,8 +159,18 @@ impl ErrorCode {
             Self::HunkNotFound | Self::HunkAmbiguous => {
                 "Read the current affected region and regenerate the patch from current content."
             }
-            Self::ConcurrentModification => {
+            Self::ConcurrentModification | Self::HashPinMismatch => {
                 "Reread affected files and regenerate the patch; do not retry blindly."
+            }
+            Self::RootLocked => {
+                "Retry after the other agent-patch writer exits; do not remove the lock or journal."
+            }
+            Self::RecoveryRequired => "Run `agent-patch recover` and inspect status --json.",
+            Self::PartiallyApplied => {
+                "Reread the tree and regenerate a complete patch for the intended after-state."
+            }
+            Self::VerifyFailed | Self::VerifyTimeout | Self::VerifySignalled => {
+                "Inspect verify artifacts; adjust the command or timeout; root was not mutated."
             }
             Self::InvalidPath | Self::PathOutsideRoot | Self::SymlinkEscape => {
                 "Use a repository-relative path that stays inside the configured root."
@@ -128,7 +181,9 @@ impl ErrorCode {
             Self::LimitPatchBytes
             | Self::LimitFileBytes
             | Self::LimitFileCount
-            | Self::LimitHunkCount => "Reduce patch size or raise the corresponding --max-* limit.",
+            | Self::LimitHunkCount
+            | Self::ShadowLimitExceeded
+            | Self::MatchWorkLimit => "Reduce patch size or raise the corresponding limit.",
             _ => "Fix the reported issue and retry.",
         }
     }
@@ -155,6 +210,10 @@ pub struct PublicError {
     pub hunk_index: Option<usize>,
     pub source: Option<SourceSpan>,
     pub hint: Option<String>,
+    pub candidates: Vec<crate::oracle::CandidateSpan>,
+    pub repair_patch: Option<String>,
+    pub root_changed: bool,
+    pub recovery_required: bool,
 }
 
 impl PublicError {
@@ -167,6 +226,10 @@ impl PublicError {
             hunk_index: None,
             source: None,
             hint: Some(code.default_hint().to_string()),
+            candidates: Vec::new(),
+            repair_patch: None,
+            root_changed: false,
+            recovery_required: false,
         }
     }
 
@@ -192,6 +255,16 @@ impl PublicError {
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    pub fn with_recovery_required(mut self, required: bool) -> Self {
+        self.recovery_required = required;
+        self
+    }
+
+    pub fn with_candidates(mut self, candidates: Vec<crate::oracle::CandidateSpan>) -> Self {
+        self.candidates = candidates;
         self
     }
 
@@ -246,5 +319,9 @@ impl ContentFingerprint {
 
     pub fn hex(&self) -> String {
         self.hash.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    pub fn labeled_hex(&self) -> String {
+        format!("blake3:{}", self.hex())
     }
 }

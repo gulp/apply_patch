@@ -52,6 +52,8 @@ pub struct UpdateFile {
     pub path: String,
     pub hunks: Vec<Hunk>,
     pub source_span: SourceSpan,
+    /// Optional BLAKE3 hex pin; checked before locate.
+    pub hash_pin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

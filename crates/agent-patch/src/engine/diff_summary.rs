@@ -25,6 +25,17 @@ pub fn diff_line_counts(before: &str, after: &str) -> DiffCounts {
     }
 }
 
+/// Observational unified diff for `--plan` output (not an apply backend).
+pub fn unified_diff(path: &str, before: &str, after: &str) -> String {
+    let diff = TextDiff::from_lines(before, after);
+    format!(
+        "{}",
+        diff.unified_diff()
+            .context_radius(3)
+            .header(&format!("a/{path}"), &format!("b/{path}"))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,5 +45,11 @@ mod tests {
         let c = diff_line_counts("a\nb\n", "a\nc\n");
         assert_eq!(c.lines_deleted, 1);
         assert_eq!(c.lines_added, 1);
+    }
+
+    #[test]
+    fn unified_mentions_path() {
+        let u = unified_diff("x.txt", "a\n", "b\n");
+        assert!(u.contains("a/x.txt") || u.contains("---"));
     }
 }

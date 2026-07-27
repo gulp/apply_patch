@@ -1,6 +1,8 @@
 //! Deterministic unique-exact hunk matching (with optional context reduction).
 
 use crate::error::{ErrorCode, PublicError};
+use crate::match_opts::{normalize_line, FuzzyMode};
+use crate::oracle::{build_candidates, MatchEvidence, MatchLevel};
 use crate::protocol::ast::{Hunk, HunkLine};
 
 /// Inclusive-exclusive range plus the insertion lines to emit for that hit.
@@ -9,6 +11,7 @@ pub struct MatchHit {
     pub start_line: usize,
     pub end_line: usize,
     pub ins_lines: Vec<String>,
+    pub evidence: MatchEvidence,
 }
 
 /// Find a unique match for the hunk's old side in `file_lines[search_start..]`.
@@ -26,6 +29,8 @@ pub fn find_unique_match(
     path: &str,
     search_start: usize,
     prefer_eof: bool,
+    used_anchor: bool,
+    fuzzy: FuzzyMode,
 ) -> Result<MatchHit, PublicError> {
     let old = hunk.old_text_lines();
     let full_ins: Vec<String> = hunk
@@ -34,13 +39,27 @@ pub fn find_unique_match(
         .map(str::to_string)
         .collect();
 
+    let base_ev = |level: MatchLevel, count: usize, lead: usize, trail: usize, twins: usize| {
+        MatchEvidence {
+            path: path.to_string(),
+            hunk_index,
+            accepted_level: level,
+            candidate_count: count,
+            retained_context_lead: lead,
+            retained_context_trail: trail,
+            used_anchor,
+            used_eof: prefer_eof,
+            nearby_twins: twins,
+        }
+    };
+
     if old.is_empty() {
         if prefer_eof {
-            // Pure insertion at EOF: append at end of file.
             return Ok(MatchHit {
                 start_line: file_lines.len(),
                 end_line: file_lines.len(),
                 ins_lines: full_ins,
+                evidence: base_ev(MatchLevel::Eof, 1, 0, 0, 0),
             });
         }
         if file_lines.is_empty() && search_start == 0 {
@@ -48,6 +67,7 @@ pub fn find_unique_match(
                 start_line: 0,
                 end_line: 0,
                 ins_lines: full_ins,
+                evidence: base_ev(MatchLevel::Exact, 1, 0, 0, 0),
             });
         }
         return Err(PublicError::new(
@@ -64,12 +84,23 @@ pub fn find_unique_match(
 
     if prefer_eof {
         if let Some(hit) = match_at_eof(file_lines, &old, &full_ins, search_start) {
-            return Ok(hit);
+            return Ok(MatchHit {
+                start_line: hit.0,
+                end_line: hit.1,
+                ins_lines: hit.2,
+                evidence: base_ev(MatchLevel::Eof, 1, 0, 0, 0),
+            });
         }
-        if let Some(hit) = try_context_reduction_at_eof(file_lines, hunk, search_start) {
-            return Ok(hit);
+        if let Some((hit, lead, trail)) =
+            try_context_reduction_at_eof(file_lines, hunk, search_start)
+        {
+            return Ok(MatchHit {
+                start_line: hit.0,
+                end_line: hit.1,
+                ins_lines: hit.2,
+                evidence: base_ev(MatchLevel::Eof, 1, lead, trail, 0),
+            });
         }
-        // Fall back to unique forward search (Agents EOF fallback, but unique-exact).
     }
 
     let matches = find_all_matches(file_lines, &old, search_start);
@@ -79,17 +110,89 @@ pub fn find_unique_match(
             start_line: start,
             end_line: end,
             ins_lines: full_ins,
+            evidence: base_ev(MatchLevel::Exact, 1, 0, 0, 0),
         });
     }
     if matches.len() > 1 {
-        if let Some(hit) = try_context_reduction(file_lines, hunk, search_start) {
-            return Ok(hit);
+        if let Some((hit, lead, trail)) = try_context_reduction(file_lines, hunk, search_start) {
+            return Ok(MatchHit {
+                start_line: hit.start_line,
+                end_line: hit.end_line,
+                ins_lines: hit.ins_lines,
+                evidence: base_ev(
+                    MatchLevel::ContextReduced,
+                    1,
+                    lead,
+                    trail,
+                    matches.len().saturating_sub(1),
+                ),
+            });
         }
-        return Err(ambiguous(hunk, hunk_index, path));
+        return Err(ambiguous_with_candidates(
+            hunk, hunk_index, path, file_lines, &matches,
+        ));
     }
 
-    if let Some(hit) = try_context_reduction(file_lines, hunk, search_start) {
-        return Ok(hit);
+    if let Some((hit, lead, trail)) = try_context_reduction(file_lines, hunk, search_start) {
+        return Ok(MatchHit {
+            start_line: hit.start_line,
+            end_line: hit.end_line,
+            ins_lines: hit.ins_lines,
+            evidence: base_ev(MatchLevel::ContextReduced, 1, lead, trail, 0),
+        });
+    }
+
+    // Unique-only fuzzy ladder (never first-match).
+    if fuzzy.allows_rstrip() {
+        let norm = FuzzyMode::Rstrip;
+        let matches = find_all_matches_normalized(file_lines, &old, search_start, norm);
+        if matches.len() == 1 {
+            let (start, end) = matches[0];
+            return Ok(MatchHit {
+                start_line: start,
+                end_line: end,
+                ins_lines: full_ins,
+                evidence: base_ev(MatchLevel::Rstrip, 1, 0, 0, 0),
+            });
+        }
+        if matches.len() > 1 {
+            return Err(ambiguous_with_candidates(
+                hunk, hunk_index, path, file_lines, &matches,
+            ));
+        }
+    }
+    if fuzzy.allows_strip() {
+        let norm = FuzzyMode::Strip;
+        let matches = find_all_matches_normalized(file_lines, &old, search_start, norm);
+        if matches.len() == 1 {
+            let (start, end) = matches[0];
+            return Ok(MatchHit {
+                start_line: start,
+                end_line: end,
+                ins_lines: full_ins,
+                evidence: base_ev(MatchLevel::Strip, 1, 0, 0, 0),
+            });
+        }
+        if matches.len() > 1 {
+            return Err(ambiguous_with_candidates(
+                hunk, hunk_index, path, file_lines, &matches,
+            ));
+        }
+    }
+
+    let mut ranges = matches;
+    if ranges.is_empty() {
+        if let Some(first) = old.first() {
+            for (i, line) in file_lines.iter().enumerate().skip(search_start) {
+                if line == first {
+                    let end = (i + old.len()).min(file_lines.len());
+                    ranges.push((i, end));
+                    if ranges.len() >= crate::oracle::MAX_CANDIDATES {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     Err(PublicError::new(
@@ -102,7 +205,8 @@ pub fn find_unique_match(
     .with_path(path)
     .with_hunk(hunk_index)
     .with_source(hunk.source_span)
-    .with_hint("Read the current affected region and regenerate the patch from current content."))
+    .with_hint("Read the current affected region and regenerate the patch from current content.")
+    .with_candidates(build_candidates(file_lines, &ranges)))
 }
 
 fn match_at_eof(
@@ -110,7 +214,7 @@ fn match_at_eof(
     old: &[&str],
     ins_lines: &[String],
     search_start: usize,
-) -> Option<MatchHit> {
+) -> Option<(usize, usize, Vec<String>)> {
     if file_lines.len() < old.len() {
         return None;
     }
@@ -119,11 +223,7 @@ fn match_at_eof(
         return None;
     }
     if file_lines[start..start + old.len()] == *old {
-        return Some(MatchHit {
-            start_line: start,
-            end_line: start + old.len(),
-            ins_lines: ins_lines.to_vec(),
-        });
+        return Some((start, start + old.len(), ins_lines.to_vec()));
     }
     None
 }
@@ -132,7 +232,7 @@ fn try_context_reduction_at_eof(
     file_lines: &[&str],
     hunk: &Hunk,
     search_start: usize,
-) -> Option<MatchHit> {
+) -> Option<((usize, usize, Vec<String>), usize, usize)> {
     let old_entries = old_side_entries(hunk);
     let change_count = old_entries.iter().filter(|(_, is_ctx, _)| !*is_ctx).count();
     if change_count == 0 {
@@ -165,13 +265,19 @@ fn try_context_reduction_at_eof(
             break;
         };
         if let Some(hit) = match_at_eof(file_lines, &needle, &ins, search_start) {
-            return Some(hit);
+            return Some((hit, lead, trail));
         }
     }
     None
 }
 
-fn ambiguous(hunk: &Hunk, hunk_index: usize, path: &str) -> PublicError {
+fn ambiguous_with_candidates(
+    hunk: &Hunk,
+    hunk_index: usize,
+    path: &str,
+    file_lines: &[&str],
+    matches: &[(usize, usize)],
+) -> PublicError {
     PublicError::new(
         ErrorCode::HunkAmbiguous,
         format!(
@@ -183,9 +289,10 @@ fn ambiguous(hunk: &Hunk, hunk_index: usize, path: &str) -> PublicError {
     .with_hunk(hunk_index)
     .with_source(hunk.source_span)
     .with_hint("Add more unique surrounding context and regenerate the patch.")
+    .with_candidates(build_candidates(file_lines, matches))
 }
 
-fn find_all_matches(
+pub fn find_all_matches(
     file_lines: &[&str],
     needle: &[&str],
     search_start: usize,
@@ -209,12 +316,45 @@ fn find_all_matches(
     out
 }
 
+pub fn find_all_matches_normalized(
+    file_lines: &[&str],
+    needle: &[&str],
+    search_start: usize,
+    mode: FuzzyMode,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if needle.is_empty() || mode == FuzzyMode::Off {
+        return out;
+    }
+    if search_start >= file_lines.len() {
+        return out;
+    }
+    if file_lines.len() < search_start + needle.len() {
+        return out;
+    }
+    let needle_n: Vec<String> = needle
+        .iter()
+        .map(|l| normalize_line(l, mode))
+        .collect();
+    let last = file_lines.len() - needle.len();
+    for start in search_start..=last {
+        let ok = file_lines[start..start + needle.len()]
+            .iter()
+            .zip(needle_n.iter())
+            .all(|(line, n)| normalize_line(line, mode) == *n);
+        if ok {
+            out.push((start, start + needle.len()));
+        }
+    }
+    out
+}
+
 /// Strip leading then trailing context until a unique match, or give up.
 fn try_context_reduction(
     file_lines: &[&str],
     hunk: &Hunk,
     search_start: usize,
-) -> Option<MatchHit> {
+) -> Option<(MatchHit, usize, usize)> {
     let old_entries = old_side_entries(hunk);
     let change_count = old_entries.iter().filter(|(_, is_ctx, _)| !*is_ctx).count();
     if change_count == 0 {
@@ -226,7 +366,6 @@ fn try_context_reduction(
     let mut trail = 0usize;
     let mut prefer_lead = true;
 
-    // Contract: strip one leading context, then one trailing, alternating; accept only if unique.
     for _ in 0..ctx_count {
         let can_lead = can_strip_leading(&old_entries, lead, trail);
         let can_trail = can_strip_trailing(&old_entries, lead, trail);
@@ -244,7 +383,7 @@ fn try_context_reduction(
         }
         if let Some(hit) = match_reduced(file_lines, hunk, &old_entries, lead, trail, search_start)
         {
-            return Some(hit);
+            return Some((hit, lead, trail));
         }
     }
     None
@@ -276,6 +415,17 @@ fn match_reduced(
         start_line: start,
         end_line: end,
         ins_lines,
+        evidence: MatchEvidence {
+            path: String::new(),
+            hunk_index: 0,
+            accepted_level: MatchLevel::ContextReduced,
+            candidate_count: 1,
+            retained_context_lead: lead,
+            retained_context_trail: trail,
+            used_anchor: false,
+            used_eof: false,
+            nearby_twins: 0,
+        },
     })
 }
 
@@ -384,7 +534,7 @@ mod tests {
             HunkLine::Delete("c".into()),
             HunkLine::Add("d".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f", 0, false).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap();
         assert_eq!(m.start_line, 1);
         assert_eq!(m.end_line, 3);
         assert_eq!(m.ins_lines, vec!["b".to_string(), "d".to_string()]);
@@ -397,7 +547,7 @@ mod tests {
             HunkLine::Delete("x".into()),
             HunkLine::Add("z".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0, false).unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 
@@ -408,7 +558,7 @@ mod tests {
             HunkLine::Delete("missing".into()),
             HunkLine::Add("x".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0, false).unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkNotFound);
     }
 
@@ -419,7 +569,7 @@ mod tests {
             HunkLine::Delete("x".into()),
             HunkLine::Add("X".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f", 2, false).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 2, false, false, FuzzyMode::Off).unwrap();
         assert_eq!(m.start_line, 2);
     }
 
@@ -432,7 +582,7 @@ mod tests {
             HunkLine::Delete("target".into()),
             HunkLine::Add("done".into()),
         ]);
-        let m = find_unique_match(&file, &h, 0, "f", 0, false).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap();
         assert_eq!(m.start_line, 1);
         assert_eq!(m.end_line, 2);
         assert_eq!(m.ins_lines, vec!["done".to_string()]);
@@ -446,7 +596,7 @@ mod tests {
             HunkLine::Delete("target".into()),
             HunkLine::Add("done".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0, false).unwrap_err();
+        let err = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 
@@ -463,7 +613,7 @@ mod tests {
             anchor: None,
             end_of_file: true,
         };
-        let m = find_unique_match(&file, &h, 0, "f", 0, true).unwrap();
+        let m = find_unique_match(&file, &h, 0, "f", 0, true, false, FuzzyMode::Off).unwrap();
         assert_eq!(m.start_line, 2);
         assert_eq!(
             m.ins_lines,

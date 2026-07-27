@@ -12,6 +12,7 @@ dependencies = [
  "clap",
  "criterion",
  "insta",
+ "libc",
  "predicates",
  "proptest",
  "serde",

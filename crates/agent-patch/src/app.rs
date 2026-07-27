@@ -1,18 +1,21 @@
-//! Application service — parse → validate → snapshot → plan → (check|commit).
+//! Application service — parse → validate → snapshot → plan → (check|plan|commit).
 
 use crate::commit::commit_plan;
 use crate::diagnostics::{
     emit_error_human, emit_error_json, emit_success_human, JsonFileResult, JsonSuccess, JsonSummary,
 };
-use crate::error::{Limits, PublicError};
+use crate::error::{ErrorCode, Limits, PublicError};
 use crate::fs::{FileSystem, RealFileSystem};
 use crate::input::read_patch_bytes;
 use crate::path_policy::{check_path_collisions, CanonicalRoot};
-use crate::plan::{build_plan, PlannedChange};
+use crate::match_opts::MatchOptions;
+use crate::plan::{build_plan_with, execution_plan_json, PlannedChange};
 use crate::protocol::parse_patch;
+use crate::shadow::{materialize, ShadowMode, ShadowOptions};
 use crate::snapshot::load_snapshots;
 use crate::telemetry::{debug_log, InvocationTimers};
 use crate::validate::{validate_against_snapshots, validate_document};
+use crate::verify::{run_verify, VerifyOptions};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -20,10 +23,18 @@ pub struct AppConfig {
     pub root: PathBuf,
     pub patch_file: Option<PathBuf>,
     pub check: bool,
+    pub plan: bool,
+    pub verify: bool,
+    pub verify_argv: Vec<String>,
+    pub shadow_mode: ShadowMode,
+    pub shadow_include_caches: bool,
+    pub match_opts: MatchOptions,
+    pub idempotent: bool,
     pub json: bool,
     pub quiet: bool,
     pub limits: Limits,
     pub fsync: bool,
+    pub receipt: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -37,6 +48,7 @@ pub fn run(config: AppConfig) -> AppOutput {
     let timers = InvocationTimers::start();
     match run_inner(&config, &timers) {
         Ok(success) => {
+            let mode = success.mode.as_str();
             let stdout = if config.json {
                 serde_json::to_string_pretty(&success).unwrap_or_else(|_| {
                     r#"{"version":1,"ok":false,"error":{"code":"INTERNAL_ERROR","exit_code":6,"message":"JSON serialization failed"}}"#.to_string()
@@ -44,7 +56,7 @@ pub fn run(config: AppConfig) -> AppOutput {
             } else if config.quiet {
                 String::new()
             } else {
-                emit_success_human(&success.summary, config.check)
+                emit_success_human(&success.summary, mode)
             };
             AppOutput {
                 exit_code: 0,
@@ -94,16 +106,226 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
         fsync: config.fsync,
     };
     let snapshots = load_snapshots(&fs, &root, &paths, &config.limits)?;
-    validate_against_snapshots(&ops, &snapshots)?;
 
-    let plan = build_plan(root.clone(), &ops, &snapshots)?;
-    debug_log("plan", &format!("entries={}", plan.entries.len()));
-
-    if !config.check {
-        commit_plan(&fs as &dyn FileSystem, &plan, &config.limits)?;
-        debug_log("commit", "ok");
+    if config.idempotent {
+        match assess_idempotent(&ops, &snapshots)? {
+            IdempotentStatus::FullyApplied => {
+                return Ok(JsonSuccess {
+                    version: 2,
+                    ok: true,
+                    mode: "apply".into(),
+                    root: root.path.display().to_string(),
+                    plan_digest: None,
+                    transaction_id: None,
+                    summary: JsonSummary {
+                        files_total: ops.len(),
+                        files_added: 0,
+                        files_updated: 0,
+                        files_deleted: 0,
+                        hunks_applied: 0,
+                        lines_added: 0,
+                        lines_deleted: 0,
+                        duration_ms: timers.elapsed_ms(),
+                    },
+                    files: Vec::new(),
+                    plan: None,
+                    verify: None,
+                    already_applied: true,
+                });
+            }
+            IdempotentStatus::Partial => {
+                return Err(PublicError::new(
+                    ErrorCode::PartiallyApplied,
+                    "Patch is only partially applied; refusing mixed replay under --idempotent.",
+                ));
+            }
+            IdempotentStatus::NotApplied => {}
+        }
     }
 
+    validate_against_snapshots(&ops, &snapshots)?;
+
+    let plan = build_plan_with(root.clone(), &ops, &snapshots, config.match_opts)?;
+    debug_log("plan", &format!("entries={}", plan.entries.len()));
+
+    if config.verify {
+        if config.verify_argv.is_empty() {
+            return Err(PublicError::new(
+                ErrorCode::InputError,
+                "--verify requires a command after `--` (e.g. --verify -- true).",
+            ));
+        }
+        let shadow_opts = ShadowOptions {
+            mode: config.shadow_mode,
+            include_caches: config.shadow_include_caches,
+            ..ShadowOptions::default()
+        };
+        let shadow = materialize(&root.path, &plan, &shadow_opts)?;
+        debug_log("shadow", &format!("files={}", shadow.report.files_copied));
+        let program = &config.verify_argv[0];
+        let args = &config.verify_argv[1..];
+        let verify_report = run_verify(
+            &shadow,
+            program,
+            args,
+            &plan.plan_digest,
+            &format!("{}", std::process::id()),
+            &VerifyOptions::default(),
+        )?;
+        // Promote: journaled commit to real root (lock acquired inside).
+        let result = commit_plan(
+            &fs as &dyn FileSystem,
+            &plan,
+            &config.limits,
+            config.receipt.as_deref(),
+        )?;
+        debug_log("commit", "ok");
+        return Ok(build_success(
+            config,
+            &root,
+            &plan,
+            "verify",
+            Some(result.transaction_id),
+            timers,
+            Some(verify_report),
+            false,
+        ));
+    }
+
+    let read_only = config.check || config.plan;
+    let transaction_id = if !read_only {
+        let result = commit_plan(
+            &fs as &dyn FileSystem,
+            &plan,
+            &config.limits,
+            config.receipt.as_deref(),
+        )?;
+        debug_log("commit", "ok");
+        Some(result.transaction_id)
+    } else {
+        None
+    };
+
+    let mode = if config.plan {
+        "plan"
+    } else if config.check {
+        "check"
+    } else {
+        "apply"
+    };
+    Ok(build_success(
+        config,
+        &root,
+        &plan,
+        mode,
+        transaction_id,
+        timers,
+        None,
+        false,
+    ))
+}
+
+enum IdempotentStatus {
+    FullyApplied,
+    Partial,
+    NotApplied,
+}
+
+fn assess_idempotent(
+    ops: &[(usize, crate::path_policy::RepoPath, &crate::protocol::ast::FileOperation)],
+    snapshots: &std::collections::BTreeMap<
+        crate::path_policy::RepoPath,
+        crate::snapshot::FileSnapshot,
+    >,
+) -> Result<IdempotentStatus, PublicError> {
+    use crate::engine::matcher::find_all_matches;
+    use crate::engine::{apply_update_with, split_content_lines};
+    use crate::protocol::ast::FileOperation;
+    use crate::snapshot::FileState;
+
+    let mut any_applied = false;
+    let mut any_pending = false;
+    for (_, repo_path, op) in ops {
+        let snap = snapshots.get(repo_path).ok_or_else(|| {
+            PublicError::new(ErrorCode::InternalError, "Missing snapshot for path.")
+        })?;
+        match (*op, &snap.state) {
+            (FileOperation::Add(add), FileState::Missing) => {
+                let _ = add;
+                any_pending = true;
+            }
+            (FileOperation::Add(add), FileState::Present(p)) => {
+                if p.text == add.content {
+                    any_applied = true;
+                } else {
+                    return Ok(IdempotentStatus::Partial);
+                }
+            }
+            (FileOperation::Delete(_), FileState::Missing) => any_applied = true,
+            (FileOperation::Delete(_), FileState::Present(_)) => any_pending = true,
+            (FileOperation::Update(_update), FileState::Missing) => {
+                return Ok(IdempotentStatus::Partial);
+            }
+            (FileOperation::Update(update), FileState::Present(p)) => {
+                match apply_update_with(
+                    &p.text,
+                    update,
+                    "\n",
+                    p.final_newline,
+                    MatchOptions::default(),
+                ) {
+                    Ok(_) => any_pending = true,
+                    Err(e) if e.code == ErrorCode::PatchNoEffect => any_applied = true,
+                    Err(e)
+                        if e.code == ErrorCode::HunkNotFound
+                            || e.code == ErrorCode::HunkAmbiguous =>
+                    {
+                        let lines = split_content_lines(&p.text);
+                        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                        let mut cursor = 0usize;
+                        let mut all_new = true;
+                        for hunk in &update.hunks {
+                            let new = hunk.new_text_lines();
+                            if new.is_empty() {
+                                continue;
+                            }
+                            let hits = find_all_matches(&refs, &new, cursor);
+                            if hits.len() != 1 {
+                                all_new = false;
+                                break;
+                            }
+                            cursor = hits[0].1;
+                        }
+                        if all_new {
+                            any_applied = true;
+                        } else {
+                            return Ok(IdempotentStatus::Partial);
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+    Ok(if any_applied && any_pending {
+        IdempotentStatus::Partial
+    } else if any_applied {
+        IdempotentStatus::FullyApplied
+    } else {
+        IdempotentStatus::NotApplied
+    })
+}
+
+fn build_success(
+    config: &AppConfig,
+    root: &CanonicalRoot,
+    plan: &crate::plan::PatchPlan,
+    mode: &str,
+    transaction_id: Option<String>,
+    timers: &InvocationTimers,
+    verify_report: Option<crate::verify::VerifyReport>,
+    already_applied: bool,
+) -> JsonSuccess {
     let files = plan
         .entries
         .iter()
@@ -138,15 +360,25 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
         })
         .collect();
 
-    Ok(JsonSuccess {
-        version: 1,
+    let (version, plan_json, plan_digest) = if config.plan {
+        (
+            2u32,
+            Some(execution_plan_json(plan, true)),
+            Some(plan.plan_digest.clone()),
+        )
+    } else if verify_report.is_some() {
+        (2u32, None, Some(plan.plan_digest.clone()))
+    } else {
+        (1u32, None, Some(plan.plan_digest.clone()))
+    };
+
+    JsonSuccess {
+        version,
         ok: true,
-        mode: if config.check {
-            "check".into()
-        } else {
-            "apply".into()
-        },
+        mode: mode.into(),
         root: root.path.display().to_string(),
+        plan_digest,
+        transaction_id,
         summary: JsonSummary {
             files_total: plan.summary.files_total,
             files_added: plan.summary.files_added,
@@ -158,7 +390,10 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
             duration_ms: timers.elapsed_ms(),
         },
         files,
-    })
+        plan: plan_json,
+        verify: verify_report,
+        already_applied,
+    }
 }
 
 pub fn default_root() -> PathBuf {

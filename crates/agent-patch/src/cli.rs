@@ -1,8 +1,10 @@
 //! CLI argument parsing.
 
 use crate::app::{default_root, AppConfig};
-use crate::error::Limits;
-use clap::Parser;
+use crate::error::{ErrorCode, Limits, PublicError};
+use crate::match_opts::{FuzzyMode, MatchOptions, RiskMode};
+use crate::shadow::ShadowMode;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -12,9 +14,44 @@ use std::path::PathBuf;
     about = "Apply localized, transactional patches for coding agents"
 )]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Validate without writing files
     #[arg(long)]
     pub check: bool,
+
+    /// Emit immutable execution plan + diffs; no writes
+    #[arg(long)]
+    pub plan: bool,
+
+    /// Materialize shadow, run command after `--`, promote on success
+    #[arg(long)]
+    pub verify: bool,
+
+    /// Shadow policy: tree (default, representative) or touched
+    #[arg(long, default_value = "tree")]
+    pub shadow_mode: String,
+
+    /// Include cache/build dirs in tree shadow (still budgeted)
+    #[arg(long)]
+    pub shadow_include_caches: bool,
+
+    /// Unique-only fuzzy ladder: off|rstrip|strip
+    #[arg(long, default_value = "off")]
+    pub fuzzy: String,
+
+    /// Match risk gate: off|warn|refuse
+    #[arg(long, default_value = "off")]
+    pub risk: String,
+
+    /// Treat full after-state as success when already applied
+    #[arg(long)]
+    pub idempotent: bool,
+
+    /// Export apply receipt JSON to this path
+    #[arg(long)]
+    pub receipt: Option<PathBuf>,
 
     /// Repository root (default: current directory)
     #[arg(long)]
@@ -42,14 +79,121 @@ pub struct Cli {
 
     /// Patch file path; if omitted, read from stdin
     pub patch_file: Option<PathBuf>,
+
+    /// Verify program and args (place after `--`)
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub verify_argv: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Environment + store health (no mutation)
+    Doctor {
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+        /// Repository root (default: current directory)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Report lock / journal / object-store health (no mutation)
+    Status {
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+        /// Repository root (default: current directory)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Resolve crash-interrupted transaction journal(s)
+    Recover {
+        /// Specific transaction id (default: all incomplete)
+        #[arg(long)]
+        transaction: Option<String>,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+        /// Repository root (default: current directory)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Revert a prior apply from a receipt
+    Revert {
+        /// Receipt JSON path
+        receipt: PathBuf,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+        /// Repository root (default: current directory)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Garbage-collect unreferenced before-image objects
+    Gc {
+        /// Report only; do not delete
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+        /// Repository root (default: current directory)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
 }
 
 impl Cli {
-    pub fn into_config(self) -> AppConfig {
-        AppConfig {
+    pub fn into_config(self) -> Result<AppConfig, PublicError> {
+        if self.command.is_some() {
+            return Err(PublicError::new(
+                ErrorCode::InternalError,
+                "into_config called with subcommand; dispatch in main.",
+            ));
+        }
+        let modes = [self.check, self.plan, self.verify]
+            .into_iter()
+            .filter(|x| *x)
+            .count();
+        if modes > 1 {
+            return Err(PublicError::new(
+                ErrorCode::InputError,
+                "--check, --plan, and --verify are mutually exclusive.",
+            ));
+        }
+        if self.receipt.is_some() && (self.check || self.plan) {
+            return Err(PublicError::new(
+                ErrorCode::InputError,
+                "--receipt requires a mutating apply.",
+            ));
+        }
+        if self.verify && self.verify_argv.is_empty() {
+            return Err(PublicError::new(
+                ErrorCode::InputError,
+                "--verify requires a command after `--` (e.g. agent-patch --verify -- true).",
+            ));
+        }
+        if !self.verify && !self.verify_argv.is_empty() {
+            return Err(PublicError::new(
+                ErrorCode::InputError,
+                "Trailing argv after `--` is only valid with --verify.",
+            ));
+        }
+        let shadow_mode = ShadowMode::parse(&self.shadow_mode)?;
+        let match_opts = MatchOptions {
+            fuzzy: FuzzyMode::parse(&self.fuzzy)?,
+            risk: RiskMode::parse(&self.risk)?,
+        };
+        Ok(AppConfig {
             root: self.root.unwrap_or_else(default_root),
             patch_file: self.patch_file,
             check: self.check,
+            plan: self.plan,
+            verify: self.verify,
+            verify_argv: self.verify_argv,
+            shadow_mode,
+            shadow_include_caches: self.shadow_include_caches,
+            match_opts,
+            idempotent: self.idempotent,
             json: self.json,
             quiet: self.quiet,
             limits: Limits {
@@ -60,6 +204,7 @@ impl Cli {
                 max_total_hunks: Limits::default().max_total_hunks,
             },
             fsync: true,
-        }
+            receipt: self.receipt,
+        })
     }
 }

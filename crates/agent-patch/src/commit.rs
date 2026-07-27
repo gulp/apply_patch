@@ -1,14 +1,24 @@
-//! Commit coordinator with revalidation and rollback.
+//! Commit coordinator with revalidation, journal, and rollback.
 
 use crate::error::{ErrorCode, Limits, PublicError};
 use crate::fs::{FileSystem, TempHandle};
+use crate::journal::{
+    new_transaction_id, refuse_if_incomplete, EntryProgress, JournalEntry, JournalState,
+    TransactionJournal,
+};
+use crate::objects::{object_rel_path, put_object};
 use crate::plan::{PatchPlan, PlannedChange};
+use crate::receipt;
+use crate::root_lock::RootLock;
 use crate::snapshot::current_identity;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct CommitResult {
     pub committed: Vec<CommittedEntry>,
+    pub transaction_id: String,
+    pub receipt_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -45,9 +55,101 @@ pub fn commit_plan(
     fs: &dyn FileSystem,
     plan: &PatchPlan,
     limits: &Limits,
+    receipt_export: Option<&Path>,
 ) -> Result<CommitResult, PublicError> {
+    let _lock = RootLock::acquire(&plan.root.path, Duration::from_secs(30))?;
+    refuse_if_incomplete(&plan.root.path)?;
     revalidate(fs, plan, limits)?;
 
+    let txid = new_transaction_id();
+    let mut journal_entries = Vec::new();
+    for entry in &plan.entries {
+        match entry {
+            PlannedChange::Create(c) => {
+                journal_entries.push(JournalEntry {
+                    path: c.path.as_str().to_string(),
+                    operation: "add".into(),
+                    before_object: None,
+                    after_blake3: Some(c.after_hash.hex()),
+                    temp_path: None,
+                    progress: EntryProgress::Pending,
+                });
+            }
+            PlannedChange::Modify(m) => {
+                let hex = put_object(&plan.root.path, &m.before.bytes)?;
+                journal_entries.push(JournalEntry {
+                    path: m.path.as_str().to_string(),
+                    operation: "update".into(),
+                    before_object: Some(object_rel_path(&hex)),
+                    after_blake3: Some(m.after_hash.hex()),
+                    temp_path: None,
+                    progress: EntryProgress::Pending,
+                });
+            }
+            PlannedChange::Remove(r) => {
+                let hex = put_object(&plan.root.path, &r.before.bytes)?;
+                journal_entries.push(JournalEntry {
+                    path: r.path.as_str().to_string(),
+                    operation: "delete".into(),
+                    before_object: Some(object_rel_path(&hex)),
+                    after_blake3: None,
+                    temp_path: None,
+                    progress: EntryProgress::Pending,
+                });
+            }
+        }
+    }
+
+    let mut journal =
+        TransactionJournal::new(txid.clone(), plan.plan_digest.clone(), journal_entries);
+    journal.write_durable(&plan.root.path)?;
+
+    // Linearization: mark COMMITTING before any visible rename/delete.
+    journal.set_state(JournalState::Committing);
+    journal.write_durable(&plan.root.path)?;
+
+    match commit_plan_inner(fs, plan, limits) {
+        Ok(mut result) => {
+            journal.set_state(JournalState::Completed);
+            for e in &mut journal.entries {
+                e.progress = EntryProgress::Done;
+            }
+            if let Err(e) = journal.write_durable(&plan.root.path) {
+                // Content is committed; surface durability issue
+                return Err(e);
+            }
+            let receipt = receipt::build_receipt(plan, &txid, &journal.entries)?;
+            let internal = receipt::write_internal(&plan.root.path, &receipt)?;
+            if let Some(dest) = receipt_export {
+                receipt::export_copy(&receipt, dest)?;
+            }
+            result.transaction_id = txid;
+            result.receipt_path = Some(internal);
+            Ok(result)
+        }
+        Err(e) => {
+            // Inner already attempted in-process rollback. Mark durable terminal
+            // unless rollback itself failed (then leave for recover).
+            if e.code == ErrorCode::RollbackFailed {
+                journal.set_state(JournalState::RollingBack);
+                let _ = journal.write_durable(&plan.root.path);
+            } else {
+                journal.set_state(JournalState::RolledBack);
+                for entry in &mut journal.entries {
+                    entry.progress = EntryProgress::RolledBack;
+                }
+                let _ = journal.write_durable(&plan.root.path);
+            }
+            Err(e)
+        }
+    }
+}
+
+fn commit_plan_inner(
+    fs: &dyn FileSystem,
+    plan: &PatchPlan,
+    _limits: &Limits,
+) -> Result<CommitResult, PublicError> {
     let mut prepared: Vec<Prepared> = Vec::new();
 
     for (idx, entry) in plan.entries.iter().enumerate() {
@@ -233,7 +335,11 @@ pub fn commit_plan(
         })
         .collect();
 
-    Ok(CommitResult { committed })
+    Ok(CommitResult {
+        committed,
+        transaction_id: String::new(),
+        receipt_path: None,
+    })
 }
 
 fn revalidate(fs: &dyn FileSystem, plan: &PatchPlan, limits: &Limits) -> Result<(), PublicError> {

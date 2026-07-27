@@ -19,10 +19,18 @@ fn stale_hunk_fails_without_mutation() {
         root: dir.path().to_path_buf(),
         patch_file: Some(patch_path),
         check: false,
+        plan: false,
+        verify: false,
+        verify_argv: Vec::new(),
+        shadow_mode: agent_patch::shadow::ShadowMode::Tree,
+        shadow_include_caches: false,
+        match_opts: agent_patch::match_opts::MatchOptions::default(),
+        idempotent: false,
         json: true,
         quiet: false,
         limits: Limits::default(),
         fsync: false,
+        receipt: None,
     });
     assert_eq!(out.exit_code, 1);
     assert!(out.stdout.contains("HUNK_NOT_FOUND"));

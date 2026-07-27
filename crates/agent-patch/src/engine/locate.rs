@@ -2,6 +2,8 @@
 
 use super::matcher::find_unique_match;
 use crate::error::{ErrorCode, PublicError};
+use crate::match_opts::MatchOptions;
+use crate::oracle::MatchEvidence;
 use crate::protocol::ast::{Hunk, UpdateFile};
 
 /// A hunk resolved against the original file lines.
@@ -14,27 +16,34 @@ pub struct LocatedChunk {
     /// Lines to insert (new side, after any matching context reduction).
     pub ins_lines: Vec<String>,
     pub hunk_index: usize,
+    pub evidence: MatchEvidence,
 }
 
 /// Resolve every hunk against `file_lines` without mutating them.
-///
-/// Search is forward-only: after each hit, the cursor advances to `orig_index + del_len`.
-/// Optional `@@ <anchor>` (stored on the hunk) must uniquely match at/after the cursor;
-/// the body search then starts at `anchor_index + 1`.
 pub fn locate_chunks(
     file_lines: &[&str],
     update: &UpdateFile,
+) -> Result<Vec<LocatedChunk>, PublicError> {
+    locate_chunks_with(file_lines, update, MatchOptions::default())
+}
+
+pub fn locate_chunks_with(
+    file_lines: &[&str],
+    update: &UpdateFile,
+    opts: MatchOptions,
 ) -> Result<Vec<LocatedChunk>, PublicError> {
     let mut chunks = Vec::with_capacity(update.hunks.len());
     let mut cursor = 0usize;
 
     for (hunk_index, hunk) in update.hunks.iter().enumerate() {
         let mut search_start = cursor;
+        let mut used_anchor = false;
 
         if let Some(anchor) = hunk.anchor.as_deref() {
             let anchor_idx =
                 locate_unique_anchor(file_lines, anchor, cursor, hunk, hunk_index, &update.path)?;
             search_start = anchor_idx + 1;
+            used_anchor = true;
         }
 
         let hit = find_unique_match(
@@ -44,12 +53,15 @@ pub fn locate_chunks(
             &update.path,
             search_start,
             hunk.end_of_file,
+            used_anchor,
+            opts.fuzzy,
         )?;
         let chunk = LocatedChunk {
             orig_index: hit.start_line,
             del_len: hit.end_line - hit.start_line,
             ins_lines: hit.ins_lines,
             hunk_index,
+            evidence: hit.evidence,
         };
         cursor = chunk.orig_index + chunk.del_len;
         chunks.push(chunk);
@@ -114,6 +126,7 @@ mod tests {
             path: "f".into(),
             source_span: SourceSpan { line: 1, column: 1 },
             hunks,
+            hash_pin: None,
         }
     }
 
