@@ -19,6 +19,8 @@ Public CLI JSON, execution plans, receipts, and journals use **`version: 2`** wh
 | `--plan` | no | no | no | Emits `ExecutionPlan`; exclusive with `--verify` |
 | `--verify -- <PROG> [ARG…]` | only on promote | only on promote | yes | Exclusive with `--check` / `--plan` |
 | `--verify-shell <SCRIPT>` | only on promote | only on promote | yes | Explicit `/bin/sh -c`; exclusive with argv `--` and with `--check` / `--plan` |
+| `--verify-timeout <DURATION>` | n/a | n/a | n/a | Wall clock for verify command (default `600` / `10m`); `Ns`/`Nm`/`Nh` or bare seconds |
+| `--verify-output-limit <BYTES>` | n/a | n/a | n/a | Per-stream capture cap (default 8388608); artifacts under shadow |
 | `revert <RECEIPT>` | yes | yes | no | New journaled inverse transaction |
 | `recover` | maybe | yes | no | Resolves incomplete journal |
 | `status` | no | no | no | Health report |
@@ -31,7 +33,8 @@ Mutual exclusions: `--check` ⊕ `--plan` ⊕ (`--verify` | `--verify-shell`) �
 
 - Canonical: `--verify -- <PROGRAM> [ARG …]` — no shell.
 - Shell escape: `--verify-shell <SCRIPT>` only.
-- Defaults: timeout 10 min, kill grace 5 s, 8 MiB per stdout/stderr stream.
+- Defaults: timeout 10 min (`--verify-timeout`), kill grace 5 s, 8 MiB per stream (`--verify-output-limit`).
+- Descendant cleanup: verify children run in a new process group; timeout sends SIGTERM then SIGKILL to the group.
 - `cwd` = shadow root.
 - Env: `AGENT_PATCH_MODE`, `AGENT_PATCH_REAL_ROOT`, `AGENT_PATCH_SHADOW_ROOT`, `AGENT_PATCH_PLAN_DIGEST`, `AGENT_PATCH_INVOCATION_ID`.
 - Hard links forbidden in shadows.
@@ -68,6 +71,8 @@ Canonical encoding: sorted repo-relative paths; no unordered maps in digest-bear
 
 1. `--fuzzy=off|rstrip|strip` (default `off`): normalize for search only; still unique-only.
 2. `--risk=off|warn|refuse` (default `off`): pure function over `MatchEvidence`.
+   - `warn`: apply proceeds; findings appear in success JSON `warnings` (and human stderr-adjacent summary lines).
+   - `refuse`: exit `RISK_REFUSED` when findings are non-empty.
 3. `--idempotent`: success only if full intended after-state is proven; else `PARTIALLY_APPLIED` (exit 1).
 4. Optional `*** Hash: blake3 <hex>` pin per file; pin failure precedes locate (`HASH_PIN_MISMATCH`, exit 5).
 
@@ -121,6 +126,7 @@ Journal states: `PREPARED` → `COMMITTING` → `COMPLETED` | `ROLLING_BACK` →
 
 - ≤8 candidates; ≤20 lines/excerpt; ≤64 KiB candidate payload; ≤16 KiB repair patch.
 - Candidates derived only from locator evidence.
+ - On `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` with at least one candidate span, JSON may include a capped draft `repair_patch` targeting the first candidate.
 
 ## Exit class extensions (still 0–7)
 

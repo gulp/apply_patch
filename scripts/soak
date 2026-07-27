@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Bounded crash / process-leak soak for CI and local gates.
+# Re-runs killpoint recover matrix and verify process-group reaping.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+ROUNDS="${AGENT_PATCH_SOAK_ROUNDS:-3}"
+echo "agent-patch soak: ${ROUNDS} round(s)"
+
+for i in $(seq 1 "$ROUNDS"); do
+  echo "--- soak round $i/$ROUNDS: crash_matrix ---"
+  cargo test --workspace --features failpoints --test crash_matrix -- --nocapture
+  echo "--- soak round $i/$ROUNDS: verify_process_reaping ---"
+  cargo test --workspace --test verify_process_reaping -- --nocapture
+done
+
+echo "agent-patch soak: ok"

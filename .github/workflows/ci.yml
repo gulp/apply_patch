@@ -17,4 +17,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
       - run: cargo test --workspace --features failpoints crash_matrix
+      - run: cargo test --workspace verify_process_reaping
+      - run: cargo test --workspace --test perf_gate
       - run: scripts/dogfood
+      - run: scripts/soak

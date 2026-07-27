@@ -69,6 +69,8 @@ If `PATCH_FILE` is omitted, the patch is read from stdin. Modes `--check`, `--pl
 | `--plan` | Emit immutable `ExecutionPlan` + diffs as JSON-friendly output; write nothing |
 | `--verify` | Materialize a shadow workspace, run argv after `--`, promote to the real root only on exit 0 |
 | `--verify-shell <SCRIPT>` | Explicit shell escape for verify (`/bin/sh -c`); prefer argv `--verify --` |
+| `--verify-timeout <DURATION>` | Verify wall-clock budget (default `600` seconds; also `Ns` / `Nm` / `Nh`) |
+| `--verify-output-limit <BYTES>` | Max bytes retained per verify stdout/stderr stream (default 8 MiB) |
 | `--shadow-mode <tree\|touched>` | Shadow policy (`tree` default = representative under excludes; `touched` = planned paths only, non-representative) |
 | `--shadow-include-caches` | Include build/cache dirs in a tree shadow (still budgeted) |
 | `--fuzzy <off\|rstrip\|strip>` | Unique-only fuzzy ladder for locate (default `off`) |
@@ -263,6 +265,7 @@ scripts/test      # cargo fmt --check, clippy -D warnings, cargo test
 scripts/lint      # fmt --check + clippy
 scripts/dogfood   # end-to-end gate (classic apply + plan/verify/receipt/recover/idempotent)
 scripts/bench     # Criterion: cargo bench --workspace
+scripts/soak      # bounded crash_matrix + verify_process_reaping rounds
 ```
 
 Tests of note:
@@ -271,19 +274,22 @@ Tests of note:
 | --- | --- |
 | `cargo test --workspace` | Unit + CLI integration (atomicity, concurrency, path safety, limits, journal/receipt/verify) |
 | `cargo test --features failpoints --test crash_matrix` | Killpoint abort → `recover` all-before / all-after |
+| `cargo test --test verify_process_reaping` | Verify timeout kills process-group grandchildren |
+| `cargo test --test perf_gate` | Generous CI apply latency budget |
 | `tests/codex_scenarios.rs` | Portable Codex fixture subset under `tests/fixtures/codex-scenarios/` |
 | `scripts/dogfood` | Acceptance gate (T1–T13); rebuilds release before running |
+| `scripts/soak` | Repeated crash_matrix + reaping (`AGENT_PATCH_SOAK_ROUNDS`, default 3) |
 | `fuzz/` | `cargo-fuzz` targets: `parse_patch`, `path_policy`, `apply_update` (see [fuzz/README.md](fuzz/README.md)) |
 | `benches/apply_update.rs` | Locate→emit throughput on a multi-thousand-line buffer |
 
-CI (Linux and macOS): `fmt` + `clippy -D warnings` + `cargo test --workspace` + `cargo test --features failpoints crash_matrix` + `scripts/dogfood`.
+CI (Linux and macOS): `fmt` + `clippy -D warnings` + `cargo test --workspace` + `crash_matrix` + `verify_process_reaping` + `perf_gate` + `scripts/dogfood` + `scripts/soak`. Platform notes: [docs/platform-capabilities.md](docs/platform-capabilities.md).
 
 Workspace layout:
 
 ```text
 crates/agent-patch/   # library + binary (+ benches, integration tests)
 fuzz/                 # cargo-fuzz workspace (parse / path / apply)
-scripts/              # agent-patch, test, lint, dogfood, bench
+scripts/              # agent-patch, test, lint, dogfood, bench, soak
 docs/                 # protocol, contracts, errors, design, research, schemas
 ```
 

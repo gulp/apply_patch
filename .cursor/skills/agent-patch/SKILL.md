@@ -23,9 +23,9 @@ scripts/agent-patch <COMMAND>
 
 Resolution order inside the wrapper:
 
-1. `target/release/agent-patch` if executable
-2. else `target/debug/agent-patch` if executable
-3. else `cargo run --quiet --bin agent-patch -- …`
+1. Newer of `target/release/agent-patch` and `target/debug/agent-patch` by mtime (when both exist)
+2. Else whichever single artifact exists
+3. Else `cargo run --quiet --bin agent-patch -- …`
 
 Do not assume `agent-patch` works as a bare command. Do not guess flags — run `scripts/agent-patch --help`. Rebuild release after engine changes (`scripts/agent-patch doctor`).
 
@@ -39,6 +39,8 @@ Optional bare command in-repo: `export PATH="$PWD/scripts:$PATH"` or `cp .envrc.
 | `--plan --json` | Immutable execution plan + diffs; no writes |
 | `--verify -- <PROG> [ARG…]` | Shadow + bounded argv; promote only on exit 0 |
 | `--verify-shell SCRIPT` | Explicit shell escape for verify (`/bin/sh -c`) |
+| `--verify-timeout DURATION` | Verify wall clock (default 600s) |
+| `--verify-output-limit BYTES` | Per-stream capture cap (default 8 MiB) |
 | `--fuzzy off\|rstrip\|strip` | Unique-only fuzzy ladder (default `off`) |
 | `--risk off\|warn\|refuse` | Match-risk gate (default `off`) |
 | `--idempotent` | Full after-state already present → success |

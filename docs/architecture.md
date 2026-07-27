@@ -23,6 +23,7 @@ Invariants: root confinement; no mutation before full in-memory plan; unique hun
 | Errors | [errors.md](./errors.md) |
 | Design | [design/](./design/) |
 | Threat model | [threat-model.md](./threat-model.md) |
+| Platform capabilities (Linux/macOS) | [platform-capabilities.md](./platform-capabilities.md) |
 | Codex fixture subset | `crates/agent-patch/tests/fixtures/codex-scenarios/` |
 | Active plan | [../IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) |
 | Backlog | [research-next-pass.md](./research-next-pass.md) |

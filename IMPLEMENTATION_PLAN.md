@@ -1,6 +1,6 @@
 # `agent-patch` — Implementation Plan
 
-Status: Active post-v1 plan (agent reliability, recovery, and verification)
+Status: Post-v1 plan — product surface shipped; Move/translate remain backlog
 Supersedes: [docs/archive/2026-07-greenfield-implementation-plan.md](docs/archive/2026-07-greenfield-implementation-plan.md)
 Authoritative behavior today: [README.md](README.md), [docs/contract-v1.md](docs/contract-v1.md), [docs/protocol.md](docs/protocol.md), [docs/design/](docs/design/)
 Post-v1 ground truth: [docs/contract-v2.md](docs/contract-v2.md), [docs/research-post-v1-seams.md](docs/research-post-v1-seams.md), [docs/schemas/](docs/schemas/)
@@ -154,38 +154,32 @@ scripts/agent-patch [OPTIONS] [PATCH_FILE]
 agent-patch [OPTIONS] [PATCH_FILE]
 ```
 
-### 3.2 Command surface (v1 + planned)
+### 3.2 Command surface
 
-Existing:
-
-| Flag / arg | Role |
+| Flag / subcommand | Role |
 | --- | --- |
 | `PATCH_FILE` / stdin | Patch input |
 | `--check` | Validate + in-memory apply; no writes |
+| `--plan` | Freeze and emit the immutable execution plan + structured diffs; no writes |
+| `--verify -- <PROGRAM> [ARG ...]` | Representative shadow, run bounded argv command, promote on exit 0 |
+| `--verify-shell <SCRIPT>` | Explicit `/bin/sh -c` verify escape |
+| `--verify-timeout <DURATION>` | Verify wall clock (default 600s; `Ns`/`Nm`/`Nh` or bare seconds) |
+| `--verify-output-limit <BYTES>` | Per-stream capture cap (default 8 MiB) |
+| `--shadow-mode <tree\|touched>` | `tree` default (representative); `touched` labeled non-representative |
+| `--shadow-include-caches` | Include cache/build dirs in tree shadow (still budgeted) |
+| `--fuzzy <off\|rstrip\|strip>` | Unique-only fuzz ladder; default `off` |
+| `--risk <off\|warn\|refuse>` | Gate over `MatchEvidence`; `warn` emits success `warnings`, `refuse` fails closed |
+| `--idempotent` | Prove full intended after-state; reject incompatible partial replay |
+| `--receipt <PATH>` | Export durable receipt after success (internal receipt always written) |
 | `--root` | Repository root |
 | `--json` | Single JSON object on stdout |
 | `--quiet` | Suppress human success summary |
 | `--max-files` / `--max-patch-bytes` / `--max-file-bytes` | Limits |
-
-Planned (contract bump required where noted):
-
-| Flag / subcommand | Role | Contract |
-| --- | --- | --- |
-| `--plan` | Freeze and emit the immutable execution plan + structured diffs; no writes | Additive CLI |
-| `--verify -- <PROGRAM> [ARG ...]` | Representative shadow, overlay plan, run bounded argv command, promote on exit 0 | Additive; shadow contract |
-| `--verify-shell <SCRIPT>` | Explicit shell escape hatch | Additive; security warning |
-| `--verify-timeout <DURATION>` | Wall-clock deadline including descendant termination | Additive |
-| `--verify-output-limit <BYTES>` | Per-stream capture cap; artifact retained | Additive |
-| `--shadow-mode <tree\|touched>` | `tree` default (representative); `touched` labeled non-representative | Additive policy |
-| `--receipt <PATH>` | Copy/export durable receipt after success (internal receipt always written) | Additive |
-| `--revert <RECEIPT>` | Transactional undo from receipt | Additive |
-| `recover [--transaction <ID>]` | Resolve crash-interrupted transaction journal | Additive |
-| `status` | Report lock/journal/object-store health without mutation | Additive |
-| `gc [--dry-run]` | Reference-safe object/artifact cleanup | Additive |
-| `--fuzzy <off\|rstrip\|strip>` | Unique-only fuzz ladder; default `off` | Contract bump for matching |
-| `--risk <off\|warn\|refuse>` | Deterministic gate over `MatchEvidence` | Additive policy |
-| `--idempotent` | Prove full intended after-state; reject incompatible partial replay | Contract bump for success modes |
-| `doctor` | Env, binary freshness, transaction health, cleanup guidance | Additive |
+| `doctor` | Env, binary freshness, transaction health, cleanup guidance |
+| `status` | Report lock/journal/object-store health without mutation |
+| `recover [--transaction <ID>]` | Resolve crash-interrupted transaction journal |
+| `revert <RECEIPT>` | Transactional undo from receipt (subcommand; flags are local) |
+| `gc [--dry-run]` | Reference-safe object/artifact cleanup |
 
 `Move File` and `translate` are backlog-only and are not part of this plan’s implementation phases.
 
@@ -199,7 +193,7 @@ Frozen in [docs/protocol.md](docs/protocol.md):
 - Unique exact locate→emit; EOF-prefer when marked
 - Move deferred ([docs/design/move.md](docs/design/move.md))
 
-Planned protocol extensions (explicit bump):
+Protocol extension (contract-v2):
 
 ```text
 *** Hash: blake3 <hex>     # optional per-file pin before hunks / after Update header
@@ -381,7 +375,7 @@ Receipts reference immutable before-image objects and include root identity, tra
 
 #### 4.3.13 Diagnostics and observability
 
-Public errors, success JSON, `status`, and `doctor` render from typed records. Optional JSONL event log (`AGENT_PATCH_EVENT_LOG=1` or `--event-log`) is an adapter—never required for correctness. Source excerpts, verifier tails, and repair patches have independent byte caps.
+Public errors, success JSON, `status`, and `doctor` render from typed records. Optional JSONL event log (`AGENT_PATCH_EVENT_LOG=1` or a file path) is an adapter—never required for correctness. Source excerpts, verifier tails, and repair patches have independent byte caps.
 
 #### 4.3.14 Doctor
 
@@ -828,7 +822,7 @@ Files/bytes/hunks, match work units, candidates, fuzz levels, risk findings, sha
 
 ### 12.4 Event log (optional)
 
-With `AGENT_PATCH_EVENT_LOG=1` or `--event-log <PATH>`, emit versioned JSONL metadata records (no patch/file bodies by default). Event-log write failure is a warning before mutation unless configured as required. Optional adapters (e.g. CI annotations) must not change exit semantics.
+With `AGENT_PATCH_EVENT_LOG=1` (writes `.agent-patch/events/events.jsonl`) or `AGENT_PATCH_EVENT_LOG=<PATH>`, emit versioned JSONL metadata records (no patch/file bodies by default). Event-log write failure never changes exit semantics. Optional adapters (e.g. CI annotations) must not change exit semantics.
 
 ### 12.5 Health and orchestrator contract
 
@@ -1056,9 +1050,9 @@ Acceptance: no first-match path exists; pin failure precedes matching; every ide
 
 ### Phase 8 — Operational hardening
 
-Deliver: `doctor` freshness checks, optional event logs, retention cleanup, crash/soak/performance CI, Linux/macOS capability docs, complete dogfood.
+Delivered: `doctor` freshness checks, optional `AGENT_PATCH_EVENT_LOG`, shadow retention reporting, crash matrix + `scripts/soak`, `perf_gate`, Linux/macOS [platform-capabilities](docs/platform-capabilities.md), complete dogfood (T1–T13).
 
-Acceptance: health errors are machine-actionable; performance gates pass; no leaked processes/shadows/temps; docs describe current behavior in present tense.
+Acceptance: health errors are machine-actionable; performance and soak gates pass; no leaked processes/shadows/temps; docs describe current behavior in present tense.
 
 ---
 
@@ -1068,19 +1062,19 @@ Acceptance: health errors are machine-actionable; performance gates pass; no lea
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-scripts/dogfood
-scripts/bench
-cargo +nightly fuzz run parse_patch -- -max_total_time=30
-
-# planned
 cargo test --workspace --features failpoints crash_matrix
 cargo test --workspace verify_process_reaping
+cargo test --workspace --test perf_gate
+scripts/dogfood
+scripts/bench
+scripts/soak
+cargo +nightly fuzz run parse_patch -- -max_total_time=30
 scripts/agent-patch doctor
 scripts/agent-patch status --json
 scripts/agent-patch --plan --json < change.patch
 scripts/agent-patch --verify -- cargo check -q < change.patch
 scripts/agent-patch --receipt /tmp/r.json < change.patch
-scripts/agent-patch --revert /tmp/r.json
+scripts/agent-patch revert /tmp/r.json
 scripts/agent-patch recover --json
 scripts/agent-patch gc --dry-run --json
 ```
@@ -1103,7 +1097,7 @@ Durable rules for agents implementing this plan:
 2. Contract bump before matching/success-mode changes.
 3. No whole-file rewrite recovery after `HUNK_*`.
 4. No nesting heredocs inside `$(...)`.
-5. Rebuild release after engine changes before trusting the wrapper (`doctor` / `cargo build --release`).
+5. After engine changes rebuild (`cargo build --release` or debug); `scripts/agent-patch` selects the newer of release/debug by mtime. Trust `doctor` freshness.
 6. Keep docs in current-state voice.
 7. Never bypass an unresolved journal or remove `.agent-patch/lock` / transactions manually.
 8. Never use hard links to build a verification shadow.
