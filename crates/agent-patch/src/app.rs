@@ -1,8 +1,10 @@
 //! Application service — parse → validate → snapshot → plan → (check|plan|commit).
 
 use crate::commit::commit_plan;
+use crate::argv_normalize::CoachNote;
 use crate::diagnostics::{
-    emit_error_human, emit_error_json, emit_success_human, JsonFileResult, JsonSuccess, JsonSummary,
+    emit_error_human, emit_error_json_with_coach, emit_success_human, JsonFileResult, JsonSuccess,
+    JsonSummary,
 };
 use crate::error::{ErrorCode, Limits, PublicError};
 use crate::events::{self, EventRecord};
@@ -40,6 +42,7 @@ pub struct AppConfig {
     pub limits: Limits,
     pub fsync: bool,
     pub receipt: Option<PathBuf>,
+    pub coach: Option<CoachNote>,
 }
 
 #[derive(Debug)]
@@ -73,7 +76,7 @@ pub fn run(config: AppConfig) -> AppOutput {
             if config.json {
                 AppOutput {
                     exit_code: err.exit_code(),
-                    stdout: emit_error_json(&err),
+                    stdout: emit_error_json_with_coach(&err, config.coach.as_ref()),
                     stderr: String::new(),
                 }
             } else {
@@ -137,6 +140,7 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
                     verify: None,
                     already_applied: true,
                     warnings: Vec::new(),
+                    coach: config.coach.clone(),
                 });
             }
             IdempotentStatus::Partial => {
@@ -429,7 +433,7 @@ fn build_success(
             Some(execution_plan_json(plan, true)),
             Some(plan.plan_digest.clone()),
         )
-    } else if verify_report.is_some() || !plan.risk_warnings.is_empty() {
+    } else if verify_report.is_some() || !plan.risk_warnings.is_empty() || config.coach.is_some() {
         (2u32, None, Some(plan.plan_digest.clone()))
     } else {
         (1u32, None, Some(plan.plan_digest.clone()))
@@ -457,6 +461,7 @@ fn build_success(
         verify: verify_report,
         already_applied,
         warnings: plan.risk_warnings.clone(),
+        coach: config.coach.clone(),
     }
 }
 

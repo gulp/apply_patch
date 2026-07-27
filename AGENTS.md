@@ -52,7 +52,7 @@ Errors: [docs/errors.md](docs/errors.md).
 - Canonical CLI: `scripts/agent-patch` (newer of release/debug by mtime → `cargo run`). Rebuild after engine changes; `doctor` checks freshness.
 - Store: `<root>/.agent-patch/{lock,objects,transactions,receipts,shadows,events}`. Guarantee is recoverability to all-before/all-after — not multi-file atomic visibility.
 - Unique-exact default; `--fuzzy` unique-only (never first-match). `Move` / `translate` backlog. Docs: present tense only.
-- Verify: `--verify -- <PROG>…` or `--verify-shell`; budgets `--verify-timeout` / `--verify-output-limit`. Patch path **before** `--`. Subcommand flags on the subcommand (`revert --json --root …`), not top-level.
+- Verify: `--verify -- <PROG>…` or `--verify-shell`; budgets `--verify-timeout` / `--verify-output-limit`. Patch path **before** `--`. Subcommand flags on the subcommand (`revert --json --root …`), not top-level. Machine mode: `--json` or `--robot`; `robot-docs` for the agent guide. Unique argv footguns may rewrite with JSON `coach`; ambiguous shapes fail with `examples`.
 - Clap: verify argv is `last = true` only — never combine with `trailing_var_arg` (exit 101 panic).
 - `recover`: mixed before/after across files → restore **all** before. Dead-PID lock reclaim OK; **never** delete journals/lock by hand or via stale-lock heuristics.
 - Optional: `AGENT_PATCH_EVENT_LOG=1`. Crash matrix: `cargo test --features failpoints --test crash_matrix`. Gate: `scripts/dogfood`.

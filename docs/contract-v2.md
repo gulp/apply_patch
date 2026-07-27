@@ -112,6 +112,14 @@ Journal states: `PREPARED` → `COMMITTING` → `COMPLETED` | `ROLLING_BACK` →
 
 - Optional JSONL event log via `AGENT_PATCH_EVENT_LOG=1` (`.agent-patch/events/events.jsonl`) or a file path.
 - Records are metadata-only (phase, ok, transaction_id / plan_digest); never required for correctness.
+-
+## Robot / machine-mode CLI
+
+- Machine mode: `--json`, `--robot` (implies JSON), or `AGENT_PATCH_ROBOT=1`.
+- Before clap, an allowlisted argv rewriter may uniquely fix known footguns (patch after `--` under `--verify`; top-level `--json`/`--root` before subcommands; `undo`→`revert`). Success JSON may include top-level `coach` (`rewrote_from`, `canonical_argv`, `note`).
+- Ambiguous argv fails closed as `INPUT_ERROR` with `error.examples` (≥2). Unknown flags may include `error.suggestions` (never auto-applied).
+- `robot-docs` prints the agent guide; JSON under machine mode.
+- Design: [design/robot-cli.md](./design/robot-cli.md). Schema: [schemas/cli-json.schema.json](./schemas/cli-json.schema.json).
 
 ## Crash / recover
 

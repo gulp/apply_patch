@@ -3,6 +3,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod app;
+pub mod argv_normalize;
 pub mod cli;
 pub mod commit;
 pub mod diagnostics;

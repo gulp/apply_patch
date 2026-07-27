@@ -212,6 +212,8 @@ pub struct PublicError {
     pub hint: Option<String>,
     pub candidates: Vec<crate::oracle::CandidateSpan>,
     pub repair_patch: Option<String>,
+    pub examples: Vec<String>,
+    pub suggestions: Vec<String>,
     pub root_changed: bool,
     pub recovery_required: bool,
 }
@@ -228,6 +230,8 @@ impl PublicError {
             hint: Some(code.default_hint().to_string()),
             candidates: Vec::new(),
             repair_patch: None,
+            examples: Vec::new(),
+            suggestions: Vec::new(),
             root_changed: false,
             recovery_required: false,
         }
@@ -270,6 +274,16 @@ impl PublicError {
 
     pub fn with_repair_patch(mut self, patch: impl Into<String>) -> Self {
         self.repair_patch = Some(patch.into());
+        self
+    }
+
+    pub fn with_examples(mut self, examples: Vec<String>) -> Self {
+        self.examples = examples;
+        self
+    }
+
+    pub fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
+        self.suggestions = suggestions;
         self
     }
 

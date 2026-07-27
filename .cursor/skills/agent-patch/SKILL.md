@@ -37,6 +37,8 @@ Optional bare command in-repo: `export PATH="$PWD/scripts:$PATH"` or `cp .envrc.
 | --- | --- |
 | `--check` | Validate in memory; no writes |
 | `--plan --json` | Immutable execution plan + diffs; no writes |
+| `--json` / `--robot` | Machine mode (one JSON object); `--robot` aliases `--json` + argv coaching |
+| `robot-docs` | Agent usage guide (JSON under machine mode) |
 | `--verify -- <PROG> [ARG…]` | Shadow + bounded argv; promote only on exit 0 |
 | `--verify-shell SCRIPT` | Explicit shell escape for verify (`/bin/sh -c`) |
 | `--verify-timeout DURATION` | Verify wall clock (default 600s) |

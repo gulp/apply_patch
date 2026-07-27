@@ -34,7 +34,7 @@ Public diagnostics map each failure to a stable code and exit class. JSON mode p
 | `LIMIT_HUNK_COUNT` | 7 | Too many hunks |
 | `IO_ERROR` | 3 | Generic I/O |
 | `INTERNAL_ERROR` | 6 | Invariant violation |
-| `INPUT_ERROR` | 2 | Cannot read patch input |
+| `INPUT_ERROR` | 2 | Cannot read patch input / invalid CLI shape (robot argv coaching) |
 
 Post-v1 / extended codes (see [contract-v2.md](./contract-v2.md)):
 
@@ -57,4 +57,4 @@ Post-v1 / extended codes (see [contract-v2.md](./contract-v2.md)):
 
 `ALREADY_APPLIED` is a success status field (exit 0), not an error code.
 
-Human mode prints `error[CODE]: …` plus optional `path`, indices, source span, and a next-action `hint` on stderr. JSON mode emits a single object on stdout and keeps stderr empty for structured failures.
+Human mode prints `error[CODE]: …` plus optional `path`, indices, source span, and a next-action `hint` on stderr. JSON mode emits a single object on stdout and keeps stderr empty for structured failures. Under `--json` / `--robot`, argv coaching may add `error.examples` / `error.suggestions` and top-level `coach` (see [design/robot-cli.md](./design/robot-cli.md)).

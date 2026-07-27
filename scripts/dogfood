@@ -474,6 +474,29 @@ else
   bad T13-idempotent "ec=$ec out=$out"
 fi
 
+
+# T14 robot argv coach: toplevel --json --root before status
+set +e
+out=$("$AP" --json --root "$DF" status 2>&1)
+ec=$?
+set -e
+if [[ $ec -eq 0 && "$out" == *'"coach"'* && "$out" == *subcommand* ]]; then
+  ok T14-robot-coach
+else
+  bad T14-robot-coach "ec=$ec out=$out"
+fi
+
+# T14b robot fail-closed examples: --verify without argv
+set +e
+out=$("$AP" --json --root "$DF" --verify "$DF/t9.patch" 2>&1)
+ec=$?
+set -e
+if [[ $ec -eq 2 && "$out" == *'"examples"'* ]]; then
+  ok T14b-robot-examples
+else
+  bad T14b-robot-examples "ec=$ec out=$out"
+fi
+
 note ""
 note "dogfood: $pass passed, $fail failed"
 if [[ $fail -ne 0 ]]; then

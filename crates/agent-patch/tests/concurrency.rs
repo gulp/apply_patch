@@ -35,6 +35,7 @@ fn stale_hunk_fails_without_mutation() {
         limits: Limits::default(),
         fsync: false,
         receipt: None,
+        coach: None,
     });
     assert_eq!(out.exit_code, 1);
     assert!(out.stdout.contains("HUNK_NOT_FOUND"));

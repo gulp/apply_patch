@@ -73,6 +73,10 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
+    /// Machine-readable mode (alias for --json; enables argv coaching)
+    #[arg(long)]
+    pub robot: bool,
+
     /// Suppress success summary on stdout
     #[arg(long)]
     pub quiet: bool,
@@ -152,6 +156,12 @@ pub enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// Print agent-oriented usage guide
+    RobotDocs {
+        /// Emit JSON `{ ok, guide }`
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Cli {
@@ -219,7 +229,7 @@ impl Cli {
             shadow_include_caches: self.shadow_include_caches,
             match_opts,
             idempotent: self.idempotent,
-            json: self.json,
+            json: self.json || self.robot,
             quiet: self.quiet,
             limits: Limits {
                 max_patch_bytes: self.max_patch_bytes,
@@ -230,6 +240,7 @@ impl Cli {
             },
             fsync: true,
             receipt: self.receipt,
+            coach: None,
         })
     }
 }

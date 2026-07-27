@@ -1,5 +1,6 @@
 //! Human and JSON diagnostics.
 
+use crate::argv_normalize::CoachNote;
 use crate::error::PublicError;
 use crate::oracle::CandidateSpan;
 use crate::plan::ExecutionPlanJson;
@@ -25,6 +26,8 @@ pub struct JsonSuccess {
     pub already_applied: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coach: Option<CoachNote>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +58,8 @@ pub struct JsonErrorEnvelope {
     pub version: u32,
     pub ok: bool,
     pub error: JsonErrorBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coach: Option<CoachNote>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +81,10 @@ pub struct JsonErrorBody {
     pub candidates: Vec<CandidateSpan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repair_patch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
     pub root_changed: bool,
     pub recovery_required: bool,
 }
@@ -87,7 +96,16 @@ pub struct JsonSource {
 }
 
 pub fn emit_error_json(err: &PublicError) -> String {
-    let version = if err.candidates.is_empty() && err.repair_patch.is_none() {
+    emit_error_json_with_coach(err, None)
+}
+
+pub fn emit_error_json_with_coach(err: &PublicError, coach: Option<&CoachNote>) -> String {
+    let version = if err.candidates.is_empty()
+        && err.repair_patch.is_none()
+        && err.examples.is_empty()
+        && err.suggestions.is_empty()
+        && coach.is_none()
+    {
         1
     } else {
         2
@@ -109,9 +127,12 @@ pub fn emit_error_json(err: &PublicError) -> String {
             hint: err.hint.clone(),
             candidates: err.candidates.clone(),
             repair_patch: err.repair_patch.clone(),
+            examples: err.examples.clone(),
+            suggestions: err.suggestions.clone(),
             root_changed: err.root_changed,
             recovery_required: err.recovery_required,
         },
+        coach: coach.cloned(),
     };
     serde_json::to_string_pretty(&body).unwrap_or_else(|_| {
         r#"{"version":1,"ok":false,"error":{"code":"INTERNAL_ERROR","exit_code":6,"message":"JSON serialization failed"}}"#.to_string()
@@ -148,6 +169,12 @@ pub fn emit_error_human(err: &PublicError) -> String {
     if let Some(hint) = &err.hint {
         out.push_str(&format!("\n  hint: {hint}"));
     }
+    for ex in &err.examples {
+        out.push_str(&format!("\n  example: {ex}"));
+    }
+    for s in &err.suggestions {
+        out.push_str(&format!("\n  suggestion: {s}"));
+    }
     out
 }
 
@@ -167,4 +194,18 @@ pub fn emit_success_human(summary: &JsonSummary, mode: &str, warnings: &[String]
         out.push_str(&format!("\n  warning: {w}"));
     }
     out
+}
+
+/// Merge optional coach into an already-serialized JSON object (subcommand reports).
+pub fn json_with_coach<T: Serialize>(value: &T, coach: Option<&CoachNote>) -> String {
+    let mut v = serde_json::to_value(value).unwrap_or(serde_json::json!({"ok": false}));
+    if let Some(c) = coach {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("coach".into(), serde_json::to_value(c).unwrap_or_default());
+            obj.insert("version".into(), serde_json::json!(2));
+        }
+    }
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| {
+        r#"{"ok":false,"error":"serialize"}"#.to_string()
+    })
 }

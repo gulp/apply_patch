@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gulp/apply_patch/docs/schemas/cli-json.schema.json",
+  "title": "agent-patch CLI JSON envelope",
+  "description": "Success and error objects emitted under --json / --robot. version is 2 when plan, oracle, verify, coach, examples, or suggestions fields are present.",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "coach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rewrote_from", "canonical_argv", "note"],
+      "properties": {
+        "rewrote_from": { "type": "array", "items": { "type": "string" } },
+        "canonical_argv": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }
+      }
+    },
+    "success": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "ok": { "const": true },
+        "mode": { "type": "string" },
+        "root": { "type": "string" },
+        "coach": { "$ref": "#/$defs/coach" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "guide": { "type": "string", "description": "robot-docs payload" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["ok", "error"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "ok": { "const": false },
+        "coach": { "$ref": "#/$defs/coach" },
+        "error": {
+          "type": "object",
+          "required": ["code", "exit_code", "message"],
+          "properties": {
+            "code": { "type": "string" },
+            "exit_code": { "type": "integer" },
+            "message": { "type": "string" },
+            "hint": { "type": "string" },
+            "examples": {
+              "type": "array",
+              "minItems": 0,
+              "items": { "type": "string" }
+            },
+            "suggestions": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "candidates": { "type": "array" },
+            "repair_patch": { "type": "string" },
+            "root_changed": { "type": "boolean" },
+            "recovery_required": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}

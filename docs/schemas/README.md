@@ -7,6 +7,7 @@ Frozen shapes for plan / receipt / journal artifacts. Public CLI JSON uses `vers
 | [execution-plan.schema.json](./execution-plan.schema.json) | `--plan` / immutable `ExecutionPlan` |
 | [receipt.schema.json](./receipt.schema.json) | Apply / revert receipts under `.agent-patch/receipts/` |
 | [journal.schema.json](./journal.schema.json) | `.agent-patch/transactions/*/journal.json` |
+| [cli-json.schema.json](./cli-json.schema.json) | `--json` / `--robot` success + error envelopes (`coach`, `examples`) |
 
 Canonical plan digest encoding: sorted repo-relative paths; no unordered maps in digest-bearing structures; `plan_digest` is `blake3:` + 64 hex chars.
 
