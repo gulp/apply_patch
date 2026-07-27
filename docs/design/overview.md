@@ -2,26 +2,31 @@
 
 ## Problem
 
-Agents need localized multi-file edits that are model-legible (V4A), fail-closed (no wrong edit, no partial tree), and runnable as one CLI (`scripts/agent-patch`).
+Agents need localized multi-file edits that are model-legible (V4A), fail-closed (no wrong edit, no partial tree), crash-recoverable, and runnable as one CLI (`scripts/agent-patch`).
 
 ## Pipeline
 
 ```text
 CLI (clap) → app::run
-               ├─ parse_patch          (protocol only)
+               ├─ parse_patch          (protocol only; optional hash pins)
                ├─ path policy + snapshot
-               ├─ validate + plan
+               ├─ idempotent assess (optional)
+               ├─ validate + plan (fuzzy / risk)
                ├─ apply_update         (pure text)
-               └─ commit_plan          (FS; skipped for --check)
+               ├─ --check / --plan     (stop; no FS writes)
+               ├─ --verify             (shadow + argv; promote on success)
+               └─ commit_plan          (lock, objects, journal, rename, receipt)
 ```
 
 | Module | Knows | Must not know |
 | --- | --- | --- |
-| Protocol | V4A grammar, spans | FS, matching |
+| Protocol | V4A grammar, spans, hash pins | FS, matching |
 | Path / snapshot | Root, symlinks, bytes, blake3, newlines | Hunk syntax |
-| Apply engine | Locate + emit text | Paths, writes, JSON |
-| Commit | Temps, rename, rollback | Patch dialect |
-| CLI | Flags, streams, exit codes | Match algorithms |
+| Apply engine | Locate + emit text, fuzzy ladder | Paths, writes, JSON |
+| Match opts / risk | Evidence gates | FS |
+| Shadow / verify | Tree copy, process group, budgets | Patch dialect |
+| Commit / journal / objects / receipt | Temps, rename, rollback, CAS, recover | Patch dialect |
+| CLI | Flags, subcommands, streams, exit codes | Match algorithms |
 
 ## Ground truth (verified)
 
@@ -41,44 +46,54 @@ CLI (clap) → app::run
 
 ## Product choices (deliberate deltas)
 
-1. Unique exact match → `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` (no first-match-wins).
-2. No default rstrip/strip/unicode fuzz (optional `--fuzzy` remains out of scope; still unique if ever added).
-3. Full in-memory apply then transactional commit + rollback (vs Codex/Agents sequential writes).
+1. Unique match → `HUNK_NOT_FOUND` / `HUNK_AMBIGUOUS` (no first-match-wins).
+2. Default exact locate; optional `--fuzzy=rstrip|strip` is unique-only (never default).
+3. Full in-memory plan then journaled commit + objects + receipt (vs Codex/Agents sequential writes).
 4. Add never overwrites.
-5. `*** End of File` with EOF-prefer exact locate; `*** Move to:` out of v1 ([`move.md`](move.md)).
+5. `*** End of File` with EOF-prefer exact locate; `*** Move to:` deferred ([`move.md`](move.md)).
 6. Observational diffs via `similar` only.
 7. Locate all chunks on the original lines, then forward-cursor emit (`engine/locate.rs`, `engine/emit.rs`).
+8. `--verify` uses a representative tree shadow under documented excludes; hard links forbidden.
+9. Incomplete journals block mutation until `recover`.
 
 ## Data flow
 
 ```text
 patch bytes → limits → parse → path validate → snapshot → op↔state validate
-  → in-memory apply (Update/Add/Delete plan) → PATCH_NO_EFFECT check
-  → --check? emit and stop
-  → revalidate blake3 → prepare temps → commit → rollback on failure → emit
+  → optional idempotent assess
+  → in-memory plan (Update/Add/Delete) → risk gate → PATCH_NO_EFFECT check
+  → --check / --plan? emit and stop
+  → --verify? shadow → argv → on success continue
+  → lock → refuse incomplete journals → put before-images → journal PREPARED
+  → COMMITTING → rename/delete → COMPLETED → receipt → emit
 ```
 
 ## Public surface
 
 ```text
-scripts/agent-patch [--check] [--json] [--quiet] [--root PATH]
+scripts/agent-patch [--check|--plan|--verify] [--fuzzy …] [--risk …] [--idempotent]
+                    [--shadow-mode tree|touched] [--shadow-include-caches]
+                    [--receipt PATH] [--json] [--quiet] [--root PATH]
                     [--max-files N] [--max-patch-bytes N] [--max-file-bytes N]
-                    [PATCH_FILE]
+                    [PATCH_FILE] [-- <VERIFY_ARGV>…]
+
+scripts/agent-patch status|doctor|recover|revert|gc …
 ```
 
-Exits / codes: [`../errors.md`](../errors.md), [`../contract-v1.md`](../contract-v1.md).
+Exits / codes: [`../errors.md`](../errors.md), [`../contract-v1.md`](../contract-v1.md), [`../contract-v2.md`](../contract-v2.md).
 
 ## Non-goals
 
-AST transforms; fuzzy default; Git stage/commit; MCP requirement; binary files; interactive conflict UI; whole-file rewrite fallback; `diffy`/`flickzeug` as V4A apply backend.
+AST transforms; fuzzy default; Git stage/commit; MCP requirement; binary files; interactive conflict UI; whole-file rewrite fallback; `diffy`/`flickzeug` as V4A apply backend; hard-link shadows; hashes-only receipts.
 
 ## Harmful patterns
 
 - Inferring apply algorithm from a dependency name (`diffy` in Codex workspace ≠ apply).
 - Feeding V4A text to `diffy::apply` / `flickzeug::apply` (unified-diff APIs).
 - Rematching against a buffer mutated after each hunk (prefer locate-all → emit).
-- Claiming multi-file FS atomicity without rollback (ordinary FS has none).
+- Claiming multi-file FS atomicity without journaled recoverability (ordinary FS has none).
 - Implementing Move without contract bump and commit-order tests (see [`move.md`](move.md)).
+- Deleting incomplete journals via stale-lock heuristics.
 
 ## Deferred (fact-backed backlog)
 
@@ -87,4 +102,5 @@ AST transforms; fuzzy default; Git stage/commit; MCP requirement; binary files; 
 | `*** Move to:` | Codex/Agents/OpenClaw/OpenCode; collision + rollback — [`move.md`](move.md) |
 | Optional path list helper | OpenClaw-style preflight for harnesses |
 | Streaming patch parse | Codex `streaming_parser.rs`; only if >`max_patch_bytes` streaming is required |
-| Explicit `--fuzzy` | Unique match at chosen fuzz level; never default |
+| `--verify-shell` | Explicit shell escape; argv verify is the default |
+| Unicode fuzzy normalize | Upstream ladder only; not enabled |

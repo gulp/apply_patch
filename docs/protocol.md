@@ -1,6 +1,6 @@
 # Patch Protocol
 
-Canonical V4A-family dialect for `agent-patch` v1. Contract: [contract-v1.md](./contract-v1.md).
+Canonical V4A-family dialect for `agent-patch`. Baseline: [contract-v1.md](./contract-v1.md). Extensions (pins, plans, fuzzy): [contract-v2.md](./contract-v2.md).
 
 ## Envelope
 
@@ -33,11 +33,23 @@ Every content line must start with `+`. The target path must not exist. Parent d
  context
 ```
 
+Optional content-hash pin (checked against the on-disk file before locate):
+
+```text
+*** Update File: path/to/file
+*** Hash: blake3 <64-hex-chars>
+@@
+-old
++new
+```
+
+`blake3 <hex>` and `blake3:<hex>` are accepted. Mismatch → `HASH_PIN_MISMATCH` (exit 5).
+
 Hunks begin with `@@` or `@@ <anchor>`:
 
 - Bare `@@` starts a section.
 - `@@ <anchor>` advances the search cursor to a unique exact line equal to `<anchor>`, then locates the hunk body.
-- Unified-diff numeric forms such as `@@ -1,3 +1,4 @@` are ignored as line-number math; the hunk body still matches exactly.
+- Unified-diff numeric forms such as `@@ -1,3 +1,4 @@` are ignored as line-number math; the hunk body still matches by content.
 
 Each hunk needs at least one `-` or `+` line. Context lines start with a single space. The target must be an existing regular UTF-8 text file.
 
@@ -54,11 +66,13 @@ An optional trailing `*** End of File` marks EOF-prefer locate for that hunk:
 *** End of File
 ```
 
-Locate prefers an exact match aligned at the end of the file (`len - old_len`). If that fails, search continues with unique-exact matching from the current cursor. No whitespace or unicode fuzz.
+Locate prefers an exact match aligned at the end of the file (`len - old_len`). If that fails, search continues with unique matching from the current cursor.
 
 ### Matching and newlines
 
-Matching is unique and exact on the file’s logical lines (line endings stripped for comparison). Apply locates all hunks on the original line array, then emits with a forward cursor. Controlled edge-context reduction applies only when the reduced needle is unique. Ambiguous or missing context fails (`HUNK_AMBIGUOUS` / `HUNK_NOT_FOUND`). Empty no-op hunks and no-effect updates fail (`PATCH_NO_EFFECT`).
+Default matching is unique and exact on the file’s logical lines (line endings stripped for comparison). Apply locates all hunks on the original line array, then emits with a forward cursor. Controlled edge-context reduction applies only when the reduced needle is unique. Ambiguous or missing context fails (`HUNK_AMBIGUOUS` / `HUNK_NOT_FOUND`). Empty no-op hunks and no-effect updates fail (`PATCH_NO_EFFECT`).
+
+Optional CLI `--fuzzy=rstrip|strip` extends the ladder after exact/context-reduction failure. Every enabled level still requires a unique hit; first-match-wins never applies. See [contract-v2.md](./contract-v2.md).
 
 The file’s LF or CRLF style is preserved on emit. Mixed line endings on update are rejected. UTF-8 BOM is preserved when present.
 
@@ -80,9 +94,9 @@ The target must be an existing regular file. No content body. Empty files may be
 - Unknown headers are hard errors
 - Symlink traversal that escapes `--root` is rejected
 
-## Unsupported in v1
+## Unsupported
 
 - `*** Move File` / `*** Move to:` (see [design/move.md](./design/move.md))
 - Binary files
-- Whitespace-fuzzy or first-match-wins matching
+- First-match-wins matching
 - Executable-bit control on Add

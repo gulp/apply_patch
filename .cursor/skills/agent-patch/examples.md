@@ -81,4 +81,33 @@ scripts/agent-patch --json --check <<'PATCH'
 PATCH
 ```
 
+## Plan (no writes)
+
+```bash
+scripts/agent-patch --plan --json < /tmp/change.patch
+```
+
+## Verify-gated apply
+
+```bash
+scripts/agent-patch --verify -- cargo test -q < /tmp/change.patch
+```
+
+## Receipt export and revert
+
+```bash
+scripts/agent-patch --receipt /tmp/r.json < /tmp/change.patch
+scripts/agent-patch revert /tmp/r.json
+```
+
+## Status / recover / doctor
+
+```bash
+scripts/agent-patch status --json
+scripts/agent-patch doctor --json
+scripts/agent-patch recover --json
+```
+
 On `HUNK_*` / stale failures: read the current region, regenerate from current content, retry — never whole-file overwrite.
+
+On `RECOVERY_REQUIRED`: `scripts/agent-patch recover` — do not delete journals or the lock by hand.

@@ -1,23 +1,27 @@
 # Transaction
 
-Validated plan → tree mutation or clean failure. Deliberate break from Codex/Agents sequential disk writes.
+Validated plan → tree mutation or clean failure. Deliberate break from Codex/Agents sequential disk writes. Durable journals and CAS before-images: [transaction-journal.md](./transaction-journal.md). Contract: [contract-v2.md](../contract-v2.md).
 
 ## Guarantee
 
-All ops are validated and applied in memory before any visible mutation. Per-file replace uses same-directory temp + atomic rename where the OS allows. If commit fails after a visible mutation, committed ops roll back from in-memory bytes. Multi-file atomic visibility is not an FS primitive; partial commits are undone and reported — never claim DB-style atomicity.
+All ops are validated and applied in memory before any visible mutation. Before the first rename/delete, the coordinator acquires `.agent-patch/lock`, refuses incomplete journals, stores before-image objects for updates/deletes, and writes a durable `PREPARED` journal. Per-file replace uses same-directory temp + atomic rename where the OS allows. Mid-commit failure uses in-process rollback when possible; otherwise leaves a recoverable journal. Multi-file atomic visibility is not an FS primitive — the guarantee is durable recoverability to proven all-before or all-after.
 
 ## Phases
 
 ```text
-1. Plan         PatchPlan { entries, base_fingerprints }
-2. Revalidate   existence + blake3 vs snapshot
-3. Prepare      temps for create/update; track created parents
-4. Commit       lexicographic path order (v1; no Move)
-5. Rollback     if step 4 fails mid-way
-6. Cleanup      leftover temps; empty created dirs on rollback
+1. Plan         PatchPlan { entries, base_fingerprints, plan_digest }
+2. Lock         exclusive `.agent-patch/lock` (mutating paths only)
+3. Gate         refuse incomplete journals (RECOVERY_REQUIRED)
+4. Revalidate   existence + blake3 vs snapshot
+5. Objects      put before-images for update/delete
+6. Journal      PREPARED → COMMITTING
+7. Commit       temps + rename/delete in plan order
+8. Finalize     COMPLETED journal + internal receipt
+9. Rollback     in-process if commit fails mid-way; else recover
 ```
 
-`--check`: stop after in-memory plan/apply. Zero temps/writes (`CountingFs`).
+`--check` / `--plan`: stop after in-memory plan. Zero temps/writes to the real tree.  
+`--verify`: shadow + argv first; lock and journaled commit only on promote.
 
 ## Identity
 
@@ -28,25 +32,32 @@ struct BaseIdentity {
 }
 ```
 
-Content hash is authoritative. Concurrent modification is not retried; caller regenerates the patch.
+Content hash is authoritative. Concurrent modification is not retried; caller regenerates the patch. Optional `*** Hash: blake3 <hex>` pins fail before locate (`HASH_PIN_MISMATCH`).
 
 ## Actions
 
-| Entry | Commit | Rollback |
+| Entry | Commit | Rollback / recover |
 | --- | --- | --- |
-| Modify | rename temp → path | restore bytes via temp+rename + mode |
+| Modify | rename temp → path | restore from CAS object + mode |
 | Create | mkdir parents; rename temp → path | unlink; rmdir empty created parents |
-| Remove | unlink | restore bytes + mode |
+| Remove | unlink | restore from CAS object + mode |
 
-When `*** Move to:` lands (v1.1): write dest then remove source; rollback both; cover collisions (Codex `004_move_*`, `010_move_overwrites_*`).
+When `*** Move to:` lands: write dest then remove source; rollback both; cover collisions (Codex `004_move_*`, `010_move_overwrites_*`).
+
+## Receipts and revert
+
+Successful mutation writes `.agent-patch/receipts/<txid>.json` referencing before-image objects (hashes-only receipts are invalid). `revert <RECEIPT>` proves current after-states, then runs a new journaled inverse transaction. `gc [--dry-run]` removes only unreferenced objects.
 
 ## Failures
 
 | Case | Exit | Code |
 | --- | --- | --- |
 | Drift before commit | 5 | `CONCURRENT_MODIFICATION` |
+| Root locked | 5 | `ROOT_LOCKED` |
+| Incomplete journal at start | 6 | `RECOVERY_REQUIRED` |
 | Commit I/O (after rollback attempt) | 3 | `ATOMIC_COMMIT_FAILED` |
-| Incomplete rollback | 6 | `ROLLBACK_FAILED` (list paths) |
+| Incomplete rollback | 6 | `ROLLBACK_FAILED` (list paths; keep journal) |
+| Ambiguous crash state | 6 | `RECOVERY_AMBIGUOUS` |
 
 ## Upstream contrast
 
@@ -54,8 +65,8 @@ When `*** Move to:` lands (v1.1): write dest then remove source; rollback both; 
 | --- | --- |
 | Codex | Sequential FS apply; `AppliedPatchDelta`; `015_*leaves_changes` keeps earlier ops |
 | Agents `WorkspaceEditor` | Per-op write immediately |
-| `agent-patch` | No visible write until full plan; rollback on commit failure |
+| `agent-patch` | No visible write until durable PREPARED journal; recover to all-before or all-after |
 
 ## Fault injection
 
-All mutations via `FileSystem` (`fs.rs`): fail Nth rename/delete/flush/rollback. Expect clean tree or `ROLLBACK_FAILED`, no orphan temps on ordinary failures.
+Killpoint / failpoint coverage targets journal and rename transitions; incomplete journals block new writers until `recover`.

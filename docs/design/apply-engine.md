@@ -29,6 +29,7 @@ Phase A — Locate (original lines, forward cursor)
       if *** End of File: prefer exact match at EOF, else unique forward search
       candidates ← exact old-side matches in window
       optional context reduction → accept only if unique
+      optional --fuzzy rstrip/strip ladder → accept only if unique
       0 → HUNK_NOT_FOUND; >1 → HUNK_AMBIGUOUS
       record Chunk { orig_index, del_len, ins_lines }; advance cursor
 
@@ -86,29 +87,52 @@ Outside `apply_update`: `join(plus_lines, "\n")` (+ trailing newline when non-em
 | Overlap | `HUNK_OVERLAP` |
 | No byte change | `PATCH_NO_EFFECT` |
 
-## Non-features (v1)
+## Non-features
 
 - `diffy::apply` / `flickzeug::apply`
-- Default rstrip/strip/unicode fuzz (Codex `seek_sequence` / Agents fuzz ladder)
-- First-match-wins
+- Default rstrip/strip/unicode fuzz (off unless `--fuzzy` is set)
+- First-match-wins at any fuzz level
 - `*** Move to:` (see [`move.md`](move.md))
 
 `*** End of File`: prefer exact match at `len - old_len`, else unique forward search. Pure `+` insertion with `*** End of File` appends at EOF.
+
+## Opt-in fuzzy / risk (contract-v2)
+
+Ground truth: [research-post-v1-seams.md](../research-post-v1-seams.md).
+
+Codex `seek_sequence` / Agents `_find_context_core` ladder (first hit wins upstream):
+
+```text
+exact → trim_end → trim → [Codex] unicode punctuation normalize
+```
+
+`--fuzzy=rstrip|strip` reuses those normalizers but accepts only a **unique** hit. `--risk` consumes `MatchEvidence`; similarity never selects a target.
+
+Agents chunk shape (Python; JS uses camelCase equivalents):
+
+```python
+@dataclass
+class Chunk:
+    orig_index: int
+    del_lines: list[str]
+    ins_lines: list[str]
+```
 
 ## Crate map
 
 | File | Role |
 | --- | --- |
-| `engine/matcher.rs` | Unique exact match + context reduction (`find_unique_match`) |
-| `engine/locate.rs` | Phase A: `locate_chunks` on original lines (forward cursor, `@@` anchors, EOF) |
+| `engine/matcher.rs` | Unique match + context reduction + optional fuzzy ladder |
+| `engine/locate.rs` | Phase A: `locate_chunks` / `locate_chunks_with` on original lines |
 | `engine/emit.rs` | Phase B: `emit_chunks` forward cursor join |
-| `engine/apply.rs` | `apply_update` orchestration, split/join, newline detect |
+| `engine/apply.rs` | `apply_update` / `apply_update_with` orchestration |
 | `engine/diff_summary.rs` | `similar` line counts |
+| `match_opts.rs` | Fuzzy / risk policy |
 
 ## Tests
 
-- Unit: exact / ambiguous / not-found, `@@` anchors, EOF-prefer, CRLF file-wins matrix, multi-hunk locate→emit
-- Integration: CLI, atomicity, concurrency, path safety, limits
+- Unit: exact / ambiguous / not-found, `@@` anchors, EOF-prefer, CRLF file-wins matrix, multi-hunk locate→emit, fuzzy unique-only
+- Integration: CLI, atomicity, concurrency, path safety, limits, journal/receipt/verify/idempotent
 - Codex portable subset: `tests/fixtures/codex-scenarios/` + `tests/codex_scenarios.rs`
 - Dogfood: `scripts/dogfood` (includes EOF)
 - Fuzz: `fuzz/fuzz_targets/{parse_patch,path_policy,apply_update}.rs`
