@@ -3,6 +3,7 @@
 Status: Active post-v1 plan (agent reliability, recovery, and verification)
 Supersedes: [docs/archive/2026-07-greenfield-implementation-plan.md](docs/archive/2026-07-greenfield-implementation-plan.md)
 Authoritative behavior today: [README.md](README.md), [docs/contract-v1.md](docs/contract-v1.md), [docs/protocol.md](docs/protocol.md), [docs/design/](docs/design/)
+Post-v1 ground truth: [docs/contract-v2.md](docs/contract-v2.md), [docs/research-post-v1-seams.md](docs/research-post-v1-seams.md), [docs/schemas/](docs/schemas/)
 Primary users: Coding agents operating through shell-capable harnesses
 Primary interface: Repo-local command-line executable (`scripts/agent-patch`; optional PATH via direnv / `cargo install`)
 Implementation language: Rust
@@ -342,6 +343,8 @@ Creates an isolated candidate workspace from the current root, then overlays the
 #### 4.3.7 Verify runner
 
 Runs argv directly with `cwd` equal to the shadow root. Creates a process group, streams bounded output to artifact files, enforces timeout, graceful then hard kill, waits for descendants, and records exit/signal/duration/truncation. Environment additions:
+
+Ground truth: `std::os::unix::process::CommandExt::process_group(0)` then `kill(-pgid, SIGTERM|SIGKILL)`; async ports often set tokio `kill_on_drop(true)` so timeouts do not orphan children.
 
 ```text
 AGENT_PATCH_MODE=verify
@@ -685,6 +688,8 @@ strip → trim equality, unique
 
 No unicode punctuation normalize in the first fuzzy ship (Codex has it; defer to keep scope small).
 
+Upstream reference (Codex `seek_sequence` / Agents `_find_context_core`): same normalizers but **first-match-wins**. Our unique gate is the safety delta. See [docs/research-post-v1-seams.md](docs/research-post-v1-seams.md).
+
 ### 9.3 Risk gate
 
 For each accepted chunk, retain complete `MatchEvidence`: attempted levels, context retained, candidates at each level, anchor/EOF behavior, and nearby twins. `off|warn|refuse` is a deterministic pure mapping over this record. Risk may refuse weak evidence but may never use similarity to select among candidates.
@@ -692,6 +697,8 @@ For each accepted chunk, retain complete `MatchEvidence`: attempted levels, cont
 ### 9.4 Idempotent detection
 
 Without `--idempotent`, emit-equals-base remains `PATCH_NO_EFFECT` (failure). With `--idempotent`, evaluate per hunk, per operation, and for the complete patch:
+
+Not flickzeug `is_diff_applied_with_config` (unified reverse round-trip) and not Codex `AppliedPatchDelta::is_exact` (partial-write trust). Prove intended after bytes via the frozen plan.
 
 - Adds already applied only when exact intended bytes and permissions exist;
 - Deletes only when the path is absent;

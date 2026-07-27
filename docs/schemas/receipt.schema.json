@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-patch.local/schemas/receipt.schema.json",
+  "title": "ApplyReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "root",
+    "created_at",
+    "transaction_id",
+    "plan_digest",
+    "tool_contract_version",
+    "files"
+  ],
+  "properties": {
+    "version": { "const": 2 },
+    "root": { "type": "string" },
+    "created_at": { "type": "string" },
+    "transaction_id": { "type": "string", "minLength": 1 },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "tool_contract_version": { "const": 2 },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "operation", "before_blake3", "after_blake3", "before_object"],
+        "properties": {
+          "path": { "type": "string" },
+          "operation": { "enum": ["add", "update", "delete"] },
+          "before_blake3": { "type": ["string", "null"] },
+          "after_blake3": { "type": ["string", "null"] },
+          "before_object": { "type": ["string", "null"] },
+          "permissions": {
+            "type": "object",
+            "properties": {
+              "executable": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

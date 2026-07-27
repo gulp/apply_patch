@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-patch.local/schemas/journal.schema.json",
+  "title": "TransactionJournal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "transaction_id",
+    "plan_digest",
+    "state",
+    "entries",
+    "created_at"
+  ],
+  "properties": {
+    "version": { "const": 2 },
+    "transaction_id": { "type": "string" },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "state": {
+      "enum": [
+        "PREPARED",
+        "COMMITTING",
+        "COMPLETED",
+        "ROLLING_BACK",
+        "ROLLED_BACK"
+      ]
+    },
+    "created_at": { "type": "string" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "operation", "progress"],
+        "properties": {
+          "path": { "type": "string" },
+          "operation": { "enum": ["add", "update", "delete"] },
+          "before_object": { "type": ["string", "null"] },
+          "after_blake3": { "type": ["string", "null"] },
+          "temp_path": { "type": ["string", "null"] },
+          "progress": {
+            "enum": ["pending", "visible", "done", "rolled_back"]
+          }
+        }
+      }
+    }
+  }
+}

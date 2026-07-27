@@ -27,6 +27,18 @@ No `diffy`/`flickzeug` apply adapter — wrong dialect (unified diff). `similar`
 
 Optional later: `HunkLocator` (exact unique vs explicit fuzzy unique) — only when `--fuzzy` exists.
 
+## Post-v1 planned seams
+
+| Seam | Prod intent | Ground truth |
+| --- | --- | --- |
+| `ExecutionPlan` + digest | Freeze after locate/emit | Agents `Chunk` / `_apply_chunks`; no upstream digest |
+| `--fuzzy` unique ladder | Opt-in rstrip/strip | Codex `seek_sequence` levels; **unique** gate is ours |
+| `--idempotent` | Full after-state proof | flickzeug `ApplyOutcome` is UX analogy only (unified) |
+| Journal + objects + `recover` | Crash all-before/after | Contrast Codex `AppliedPatchDelta` (non-atomic) |
+| Verify runner | argv + process group + budgets | `process_group(0)` + group kill; `kill_on_drop` patterns |
+
+Details and code samples: [research-post-v1-seams.md](../research-post-v1-seams.md).
+
 ## Internal (private)
 
 Engine: `locate_chunks`, `emit_chunks`.  

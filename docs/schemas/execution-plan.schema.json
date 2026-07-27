@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-patch.local/schemas/execution-plan.schema.json",
+  "title": "ExecutionPlan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "root", "entries", "plan_digest", "match_evidence"],
+  "properties": {
+    "version": { "const": 2 },
+    "root": { "type": "string" },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "operation", "before_blake3", "after_blake3"],
+        "properties": {
+          "path": { "type": "string" },
+          "operation": { "enum": ["add", "update", "delete"] },
+          "before_blake3": { "type": ["string", "null"] },
+          "after_blake3": { "type": ["string", "null"] },
+          "hunks": { "type": "integer", "minimum": 0 },
+          "lines_added": { "type": "integer", "minimum": 0 },
+          "lines_deleted": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "match_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "hunk_index", "accepted_level", "candidate_count"],
+        "properties": {
+          "path": { "type": "string" },
+          "hunk_index": { "type": "integer", "minimum": 0 },
+          "accepted_level": { "enum": ["exact", "context_reduced", "rstrip", "strip", "eof"] },
+          "candidate_count": { "type": "integer", "minimum": 0 },
+          "retained_context_lead": { "type": "integer", "minimum": 0 },
+          "retained_context_trail": { "type": "integer", "minimum": 0 },
+          "used_anchor": { "type": "boolean" },
+          "used_eof": { "type": "boolean" },
+          "nearby_twins": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

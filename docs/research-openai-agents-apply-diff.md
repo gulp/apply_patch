@@ -10,16 +10,10 @@ Primary source (via `opensrc path openai/openai-agents-python#main`):
 
 ## Related: `@openai/agents` (npm)
 
-`opensrc @openai/agents` failed with npm registry decode errors. Resolved via package metadata:
-
-- npm: [`@openai/agents@0.13.5`](https://www.npmjs.com/package/@openai/agents)
-- repo: `openai/openai-agents-js` (umbrella package re-exports `@openai/agents-core`)
-
-Fetched with:
+Prefer GitHub tree (npm package name is not a GitHub repo):
 
 ```bash
 opensrc path openai/openai-agents-js#main
-opensrc path openai/openai-agents-js@v0.13.5
 ```
 
 Canonical implementation:

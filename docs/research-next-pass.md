@@ -2,6 +2,8 @@
 
 Remaining fact-backed follow-ups. Implemented capabilities live in the contract, protocol, and design docs. Sources via opensrc + grep-app.
 
+Post-v1 seam probe (2026-07-27): [research-post-v1-seams.md](./research-post-v1-seams.md).
+
 ## Protocol / product
 
 | Item | Ground truth | Work |
@@ -12,6 +14,10 @@ Remaining fact-backed follow-ups. Implemented capabilities live in the contract,
 | Streaming patch parse | Codex `streaming_parser.rs` | Only if harnesses stream past `max_patch_bytes` before `*** End Patch` |
 | Responses op bridge | `ApplyPatchCall` / `create_file`\|`update_file`\|`delete_file` with headerless `diff` | Optional `--operation-json`; CLI stays envelope-oriented |
 | Stronger already-applied hint | flickzeug reverse-round-trip (unified only); Codex `delta.exact` is FS-delta trust | Optional distinct hint when new side present / old side absent — still fail-closed, not silent success |
+
+| Verify subprocess lifecycle | `CommandExt::process_group(0)` + group kill; tokio `kill_on_drop(true)` | Wire into `--verify` runner (contract-v2) |
+| Durable journal / CAS receipts | No V4A upstream equivalent; Codex leaves partial applies | Implement per [design/transaction-journal.md](design/transaction-journal.md) |
+| `*** Hash:` pins | grep-app: no wild hits for `*** Hash:` | Original BLAKE3 pin grammar (contract-v2) |
 
 ## Reference notes (probed)
 

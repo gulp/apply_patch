@@ -2,6 +2,8 @@
 
 Frozen decisions for parallel implementation. Changing any field requires an explicit contract bump.
 
+Post-v1 extensions (plans, verify, journals, receipts, fuzzy/risk/idempotent) live in [contract-v2.md](./contract-v2.md) without weakening the matching rules below.
+
 ## Operations
 
 Supported:
@@ -21,7 +23,7 @@ Deferred to v1.1: `Move File` / `*** Move to:` (see [design/move.md](./design/mo
 5. Zero matches → `HUNK_NOT_FOUND`.
 6. Multiple matches → `HUNK_AMBIGUOUS`.
 
-No fuzzy, whitespace-normalized, or first-match-wins behavior.
+Default behavior has no fuzzy, whitespace-normalized, or first-match-wins matching. Optional unique-only `--fuzzy=rstrip|strip` is defined in [contract-v2.md](./contract-v2.md) and never selects first-match.
 
 Apply algorithm: locate all chunks on the original line array, then emit with a forward cursor (OpenAI Agents `apply_diff` shape). Do not rematch against a mutating buffer.
 
@@ -45,7 +47,7 @@ Custom exact locator + cursor emit. Not `diffy`. `similar` is observational only
 | Empty-file deletion | Allowed |
 | No-op patch / no-op update | Fail (`PATCH_NO_EFFECT`) |
 | Executable add mode | Deferred |
-| Rollback storage | In-memory under file-size limit |
+| Rollback storage | In-memory under file-size limit for in-process undo; durable CAS objects under `.agent-patch/objects/` for recover/revert (see [contract-v2.md](./contract-v2.md)) |
 | Directory creation for Add | Implicit and transactional (created parents tracked for rollback) |
 | Absolute paths in JSON | Root shown as resolved absolute path; file paths remain repo-relative |
 | Hash | BLAKE3; labeled `blake3` in JSON |
