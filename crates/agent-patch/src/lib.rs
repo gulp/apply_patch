@@ -9,6 +9,8 @@ pub mod diagnostics;
 pub mod doctor;
 pub mod engine;
 pub mod error;
+pub mod events;
+pub mod failpoints;
 pub mod fs;
 pub mod gc;
 pub mod input;

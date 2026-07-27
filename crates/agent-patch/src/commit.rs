@@ -1,6 +1,7 @@
 //! Commit coordinator with revalidation, journal, and rollback.
 
 use crate::error::{ErrorCode, Limits, PublicError};
+use crate::failpoints::{self, names as fp};
 use crate::fs::{FileSystem, TempHandle};
 use crate::journal::{
     new_transaction_id, refuse_if_incomplete, EntryProgress, JournalEntry, JournalState,
@@ -103,21 +104,21 @@ pub fn commit_plan(
     let mut journal =
         TransactionJournal::new(txid.clone(), plan.plan_digest.clone(), journal_entries);
     journal.write_durable(&plan.root.path)?;
+    failpoints::hit(fp::AFTER_PREPARED);
 
     // Linearization: mark COMMITTING before any visible rename/delete.
     journal.set_state(JournalState::Committing);
     journal.write_durable(&plan.root.path)?;
+    failpoints::hit(fp::BEFORE_VISIBLE_MUTATE);
 
     match commit_plan_inner(fs, plan, limits) {
         Ok(mut result) => {
+            failpoints::hit(fp::BEFORE_COMPLETED);
             journal.set_state(JournalState::Completed);
             for e in &mut journal.entries {
                 e.progress = EntryProgress::Done;
             }
-            if let Err(e) = journal.write_durable(&plan.root.path) {
-                // Content is committed; surface durability issue
-                return Err(e);
-            }
+            journal.write_durable(&plan.root.path)?;
             let receipt = receipt::build_receipt(plan, &txid, &journal.entries)?;
             let internal = receipt::write_internal(&plan.root.path, &receipt)?;
             if let Some(dest) = receipt_export {
@@ -318,6 +319,9 @@ fn commit_plan_inner(
             },
         };
         committed_ops.push(action);
+        if committed_ops.len() == 1 {
+            failpoints::hit(fp::AFTER_FIRST_VISIBLE);
+        }
     }
 
     drop_prepared(fs, prepared);

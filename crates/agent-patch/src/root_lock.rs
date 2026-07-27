@@ -32,6 +32,12 @@ impl RootLock {
                     return Ok(Self { path, _file: f });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Stale lock from a crashed holder: reclaim if PID is gone.
+                    // Never delete journals here — only the advisory lock file.
+                    if lock_holder_dead(&path) {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
                     if Instant::now() >= deadline {
                         let owner = fs::read_to_string(&path).unwrap_or_default();
                         return Err(PublicError::new(
@@ -61,6 +67,32 @@ impl Drop for RootLock {
     }
 }
 
+fn lock_holder_dead(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Some(pid_str) = contents.trim().strip_prefix("pid=") else {
+        return false;
+    };
+    let Ok(pid) = pid_str.parse::<i32>() else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        // signal 0: existence check
+        let rc = unsafe { libc::kill(pid, 0) };
+        rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +113,15 @@ mod tests {
             let _a = RootLock::acquire(dir.path(), Duration::from_millis(50)).unwrap();
         }
         let _b = RootLock::acquire(dir.path(), Duration::from_millis(50)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_dead_pid_lock_is_reclaimed() {
+        let dir = tempdir().unwrap();
+        ensure_layout(dir.path()).unwrap();
+        let path = lock_path(dir.path());
+        fs::write(&path, "pid=2147483647\n").unwrap(); // unlikely live
+        let _lock = RootLock::acquire(dir.path(), Duration::from_millis(200)).unwrap();
     }
 }

@@ -15,6 +15,11 @@ path = "src/lib.rs"
 name = "agent-patch"
 path = "src/main.rs"
 
+[features]
+default = []
+# Crash-injection hooks for killpoint / recover matrix tests.
+failpoints = []
+
 [dependencies]
 blake3 = { workspace = true }
 camino = { workspace = true }

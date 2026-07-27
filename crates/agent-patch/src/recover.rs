@@ -1,6 +1,7 @@
 //! Crash recovery from durable transaction journals.
 
 use crate::error::{ContentFingerprint, ErrorCode, PublicError};
+use crate::events;
 use crate::journal::{
     list_incomplete, EntryProgress, JournalEntry, JournalState, TransactionJournal,
 };
@@ -27,6 +28,7 @@ pub struct RecoveredTx {
 
 pub fn recover(root: &Path, transaction: Option<&str>) -> Result<RecoverResult, PublicError> {
     let _lock = RootLock::acquire(root, Duration::from_secs(30))?;
+    let _ = events::cleanup_stale_shadows(root);
     let targets = match transaction {
         Some(txid) => vec![txid.to_string()],
         None => list_incomplete(root)?,
@@ -177,11 +179,11 @@ fn all_after_match(root: &Path, journal: &TransactionJournal) -> Result<AfterChe
     }
     if any_after && !any_before_or_other {
         Ok(AfterCheck::AllAfter)
-    } else if !any_after {
-        Ok(AfterCheck::NeedsRollback)
     } else {
-        // Mixed after + before across entries — never invent mixed roll-forward.
-        Ok(AfterCheck::Ambiguous)
+        // All-before or mixed before/after across entries: restore every
+        // before-image. Never invent mixed roll-forward of after-states.
+        // (Content matching neither before nor after already returned Ambiguous.)
+        Ok(AfterCheck::NeedsRollback)
     }
 }
 

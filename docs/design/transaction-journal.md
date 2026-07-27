@@ -52,6 +52,8 @@ Rules:
 2. Never delete journals via stale-lock heuristics.
 3. Mutating commands refuse to start while any incomplete journal exists (`RECOVERY_REQUIRED`).
 4. Lock is advisory defense in depth; content revalidation always runs.
+5. A lock file whose recorded PID is not alive may be reclaimed; journals are never deleted by that path.
+6. `COMMITTING` with a mix of before/after file identities restores **all** before-images (not Ambiguous), provided every path matches either before or after.
 
 ## Object GC
 
