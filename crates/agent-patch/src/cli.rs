@@ -33,6 +33,14 @@ pub struct Cli {
     #[arg(long, value_name = "SCRIPT")]
     pub verify_shell: Option<String>,
 
+    /// Verify wall-clock timeout (seconds, or Ns/Nm/Nh; default 600s)
+    #[arg(long, default_value = "600", value_name = "DURATION")]
+    pub verify_timeout: String,
+
+    /// Max bytes captured per verify stdout/stderr stream (default 8 MiB)
+    #[arg(long, default_value = "8388608", value_name = "BYTES")]
+    pub verify_output_limit: String,
+
     /// Shadow policy: tree (default, representative) or touched
     #[arg(long, default_value = "tree")]
     pub shadow_mode: String,
@@ -194,6 +202,9 @@ impl Cli {
             fuzzy: FuzzyMode::parse(&self.fuzzy)?,
             risk: RiskMode::parse(&self.risk)?,
         };
+        let verify_timeout = crate::verify::parse_verify_timeout(&self.verify_timeout)?;
+        let verify_output_limit =
+            crate::verify::parse_verify_output_limit(&self.verify_output_limit)?;
         Ok(AppConfig {
             root: self.root.unwrap_or_else(default_root),
             patch_file: self.patch_file,
@@ -202,6 +213,8 @@ impl Cli {
             verify: verify_mode,
             verify_argv: self.verify_argv,
             verify_shell: self.verify_shell,
+            verify_timeout,
+            verify_output_limit,
             shadow_mode,
             shadow_include_caches: self.shadow_include_caches,
             match_opts,

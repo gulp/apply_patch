@@ -153,7 +153,13 @@ fn crash_matrix_single_file_after_first_visible_completes() {
     let (code, out) = recover(dir.path());
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("completed"), "{out}");
-    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "ALPHA\n");
-    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "bravo\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "ALPHA\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "bravo\n"
+    );
     assert!(status_ok(dir.path()));
 }

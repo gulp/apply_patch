@@ -81,3 +81,77 @@ pub fn truncate_repair_patch(patch: String) -> String {
         s
     }
 }
+
+/// Draft a repair Update targeting the first candidate span.
+///
+/// Replaces the candidate's current lines with the hunk's intended new side,
+/// retaining up to two surrounding context lines from the file. Returns `None`
+/// when there is no usable candidate span.
+pub fn draft_repair_patch(
+    path: &str,
+    file_lines: &[&str],
+    new_side: &[&str],
+    ranges: &[(usize, usize)],
+) -> Option<String> {
+    let &(start, end) = ranges.first()?;
+    if start > file_lines.len() {
+        return None;
+    }
+    let end = end.min(file_lines.len());
+    if start > end {
+        return None;
+    }
+    let ctx_before = start.saturating_sub(2);
+    let ctx_after = (end + 2).min(file_lines.len());
+
+    let mut body = String::from("*** Begin Patch\n");
+    body.push_str("*** Update File: ");
+    body.push_str(path);
+    body.push('\n');
+    body.push_str("@@\n");
+    for line in &file_lines[ctx_before..start] {
+        body.push(' ');
+        body.push_str(line);
+        body.push('\n');
+    }
+    for line in &file_lines[start..end] {
+        body.push('-');
+        body.push_str(line);
+        body.push('\n');
+    }
+    for line in new_side {
+        body.push('+');
+        body.push_str(line);
+        body.push('\n');
+    }
+    for line in &file_lines[end..ctx_after] {
+        body.push(' ');
+        body.push_str(line);
+        body.push('\n');
+    }
+    body.push_str("*** End Patch\n");
+    Some(truncate_repair_patch(body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_repair_targets_first_candidate() {
+        let file = ["aa", "bb", "cc", "dd"];
+        let patch = draft_repair_patch("f.txt", &file, &["XX"], &[(1, 2)]).unwrap();
+        assert!(patch.contains("*** Update File: f.txt"));
+        assert!(patch.contains("-bb\n"));
+        assert!(patch.contains("+XX\n"));
+        assert!(patch.contains(" aa\n") || patch.contains(" aa"));
+    }
+
+    #[test]
+    fn truncate_marks_oversized() {
+        let big = "x".repeat(MAX_REPAIR_PATCH_BYTES + 10);
+        let out = truncate_repair_patch(big);
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= MAX_REPAIR_PATCH_BYTES + 4);
+    }
+}

@@ -3,6 +3,7 @@
 use agent_patch::app::{run, AppConfig};
 use agent_patch::error::Limits;
 use std::fs;
+use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]
@@ -23,6 +24,8 @@ fn stale_hunk_fails_without_mutation() {
         verify: false,
         verify_argv: Vec::new(),
         verify_shell: None,
+        verify_timeout: Duration::from_secs(600),
+        verify_output_limit: 8 * 1024 * 1024,
         shadow_mode: agent_patch::shadow::ShadowMode::Tree,
         shadow_include_caches: false,
         match_opts: agent_patch::match_opts::MatchOptions::default(),

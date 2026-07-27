@@ -23,6 +23,8 @@ pub struct JsonSuccess {
     pub verify: Option<crate::verify::VerifyReport>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub already_applied: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,14 +141,18 @@ pub fn emit_error_human(err: &PublicError) -> String {
             ));
         }
     }
+    if let Some(repair) = &err.repair_patch {
+        out.push_str("\n  repair_patch:\n");
+        out.push_str(repair);
+    }
     if let Some(hint) = &err.hint {
         out.push_str(&format!("\n  hint: {hint}"));
     }
     out
 }
 
-pub fn emit_success_human(summary: &JsonSummary, mode: &str) -> String {
-    format!(
+pub fn emit_success_human(summary: &JsonSummary, mode: &str, warnings: &[String]) -> String {
+    let mut out = format!(
         "{mode} ok: {} file(s) ({} added, {} updated, {} deleted); +{} -{} lines; {} hunk(s); {} ms",
         summary.files_total,
         summary.files_added,
@@ -156,5 +162,9 @@ pub fn emit_success_human(summary: &JsonSummary, mode: &str) -> String {
         summary.lines_deleted,
         summary.hunks_applied,
         summary.duration_ms
-    )
+    );
+    for w in warnings {
+        out.push_str(&format!("\n  warning: {w}"));
+    }
+    out
 }

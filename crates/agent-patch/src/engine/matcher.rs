@@ -2,7 +2,7 @@
 
 use crate::error::{ErrorCode, PublicError};
 use crate::match_opts::{normalize_line, FuzzyMode};
-use crate::oracle::{build_candidates, MatchEvidence, MatchLevel};
+use crate::oracle::{build_candidates, draft_repair_patch, MatchEvidence, MatchLevel};
 use crate::protocol::ast::{Hunk, HunkLine};
 
 /// Inclusive-exclusive range plus the insertion lines to emit for that hit.
@@ -40,8 +40,8 @@ pub fn find_unique_match(
         .map(str::to_string)
         .collect();
 
-    let base_ev = |level: MatchLevel, count: usize, lead: usize, trail: usize, twins: usize| {
-        MatchEvidence {
+    let base_ev =
+        |level: MatchLevel, count: usize, lead: usize, trail: usize, twins: usize| MatchEvidence {
             path: path.to_string(),
             hunk_index,
             accepted_level: level,
@@ -51,8 +51,7 @@ pub fn find_unique_match(
             used_anchor,
             used_eof: prefer_eof,
             nearby_twins: twins,
-        }
-    };
+        };
 
     if old.is_empty() {
         if prefer_eof {
@@ -207,7 +206,8 @@ pub fn find_unique_match(
     .with_hunk(hunk_index)
     .with_source(hunk.source_span)
     .with_hint("Read the current affected region and regenerate the patch from current content.")
-    .with_candidates(build_candidates(file_lines, &ranges)))
+    .with_candidates(build_candidates(file_lines, &ranges))
+    .maybe_repair(path, file_lines, hunk, &ranges))
 }
 
 fn match_at_eof(
@@ -292,6 +292,32 @@ fn ambiguous_with_candidates(
     .with_source(hunk.source_span)
     .with_hint("Add more unique surrounding context and regenerate the patch.")
     .with_candidates(build_candidates(file_lines, matches))
+    .maybe_repair(path, file_lines, hunk, matches)
+}
+
+trait MaybeRepair {
+    fn maybe_repair(
+        self,
+        path: &str,
+        file_lines: &[&str],
+        hunk: &Hunk,
+        ranges: &[(usize, usize)],
+    ) -> PublicError;
+}
+
+impl MaybeRepair for PublicError {
+    fn maybe_repair(
+        self,
+        path: &str,
+        file_lines: &[&str],
+        hunk: &Hunk,
+        ranges: &[(usize, usize)],
+    ) -> PublicError {
+        match draft_repair_patch(path, file_lines, &hunk.new_text_lines(), ranges) {
+            Some(repair) => self.with_repair_patch(repair),
+            None => self,
+        }
+    }
 }
 
 pub fn find_all_matches(
@@ -334,10 +360,7 @@ pub fn find_all_matches_normalized(
     if file_lines.len() < search_start + needle.len() {
         return out;
     }
-    let needle_n: Vec<String> = needle
-        .iter()
-        .map(|l| normalize_line(l, mode))
-        .collect();
+    let needle_n: Vec<String> = needle.iter().map(|l| normalize_line(l, mode)).collect();
     let last = file_lines.len() - needle.len();
     for start in search_start..=last {
         let ok = file_lines[start..start + needle.len()]
@@ -549,7 +572,8 @@ mod tests {
             HunkLine::Delete("x".into()),
             HunkLine::Add("z".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
+        let err =
+            find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 
@@ -560,7 +584,8 @@ mod tests {
             HunkLine::Delete("missing".into()),
             HunkLine::Add("x".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
+        let err =
+            find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkNotFound);
     }
 
@@ -598,7 +623,8 @@ mod tests {
             HunkLine::Delete("target".into()),
             HunkLine::Add("done".into()),
         ]);
-        let err = find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
+        let err =
+            find_unique_match(&file, &h, 0, "f", 0, false, false, FuzzyMode::Off).unwrap_err();
         assert_eq!(err.code, ErrorCode::HunkAmbiguous);
     }
 

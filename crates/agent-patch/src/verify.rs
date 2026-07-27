@@ -26,6 +26,58 @@ impl Default for VerifyOptions {
     }
 }
 
+/// Parse `--verify-timeout`: bare seconds, or `Ns` / `Nm` / `Nh`.
+pub fn parse_verify_timeout(raw: &str) -> Result<Duration, PublicError> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err(PublicError::new(
+            ErrorCode::InputError,
+            "--verify-timeout must be a positive duration (e.g. 600, 60s, 10m).",
+        ));
+    }
+    let (num, mult) = if let Some(rest) = s.strip_suffix('s').or_else(|| s.strip_suffix('S')) {
+        (rest, 1u64)
+    } else if let Some(rest) = s.strip_suffix('m').or_else(|| s.strip_suffix('M')) {
+        (rest, 60)
+    } else if let Some(rest) = s.strip_suffix('h').or_else(|| s.strip_suffix('H')) {
+        (rest, 3600)
+    } else {
+        (s, 1)
+    };
+    let n: u64 = num.trim().parse().map_err(|_| {
+        PublicError::new(
+            ErrorCode::InputError,
+            format!("Invalid --verify-timeout {raw:?}; use seconds or Ns/Nm/Nh."),
+        )
+    })?;
+    if n == 0 {
+        return Err(PublicError::new(
+            ErrorCode::InputError,
+            "--verify-timeout must be greater than zero.",
+        ));
+    }
+    n.checked_mul(mult)
+        .map(Duration::from_secs)
+        .ok_or_else(|| PublicError::new(ErrorCode::InputError, "--verify-timeout overflowed."))
+}
+
+/// Parse `--verify-output-limit` as a positive byte count.
+pub fn parse_verify_output_limit(raw: &str) -> Result<u64, PublicError> {
+    let n: u64 = raw.trim().parse().map_err(|_| {
+        PublicError::new(
+            ErrorCode::InputError,
+            format!("Invalid --verify-output-limit {raw:?}; expected positive byte count."),
+        )
+    })?;
+    if n == 0 {
+        return Err(PublicError::new(
+            ErrorCode::InputError,
+            "--verify-output-limit must be greater than zero.",
+        ));
+    }
+    Ok(n)
+}
+
 #[derive(Debug, Serialize)]
 pub struct VerifyReport {
     pub ok: bool,
@@ -184,16 +236,15 @@ pub fn run_verify(
         Ok(report)
     } else {
         let msg = if timed_out {
-            format!(
-                "Verify timed out after {}s",
-                opts.timeout.as_secs()
-            )
+            format!("Verify timed out after {}s", opts.timeout.as_secs())
         } else if signalled {
             "Verify process signalled".to_string()
         } else {
             format!(
                 "Verify command exited {}",
-                exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".into())
             )
         };
         Err(PublicError::new(code, msg).with_hint(
@@ -278,9 +329,9 @@ fn kill_tree(child: &mut std::process::Child, grace: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path_policy::{CanonicalRoot, parse_repo_path};
-    use crate::plan::{PlanSummary, PlannedCreate, PlannedChange, PatchPlan};
     use crate::error::ContentFingerprint;
+    use crate::path_policy::{parse_repo_path, CanonicalRoot};
+    use crate::plan::{PatchPlan, PlanSummary, PlannedChange, PlannedCreate};
     use crate::shadow::{materialize, ShadowOptions};
     use std::collections::BTreeMap;
 
@@ -305,6 +356,7 @@ mod tests {
             match_evidence: vec![],
             plan_digest: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .into(),
+            risk_warnings: vec![],
         };
         let shadow = materialize(root, &plan, &ShadowOptions::default()).unwrap();
         let report = run_verify(
@@ -337,6 +389,7 @@ mod tests {
             match_evidence: vec![],
             plan_digest: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .into(),
+            risk_warnings: vec![],
         };
         let shadow = materialize(root, &plan, &ShadowOptions::default()).unwrap();
         let err = run_verify(

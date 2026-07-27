@@ -19,9 +19,8 @@ fn main() -> ExitCode {
                 Ok(report) => {
                     let code = if report.ok { 0 } else { 1 };
                     let out = if json {
-                        serde_json::to_string_pretty(&report).unwrap_or_else(|_| {
-                            r#"{"ok":false,"error":"serialize"}"#.to_string()
-                        })
+                        serde_json::to_string_pretty(&report)
+                            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize"}"#.to_string())
                     } else {
                         format_status_human(&report)
                     };
@@ -37,9 +36,8 @@ fn main() -> ExitCode {
                 Ok(report) => {
                     let code = if report.ok { 0 } else { 1 };
                     let out = if json {
-                        serde_json::to_string_pretty(&report).unwrap_or_else(|_| {
-                            r#"{"ok":false,"error":"serialize"}"#.to_string()
-                        })
+                        serde_json::to_string_pretty(&report)
+                            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize"}"#.to_string())
                     } else {
                         let mut lines = vec![format!(
                             "agent-patch doctor: {} ({})",
@@ -66,9 +64,8 @@ fn main() -> ExitCode {
             match recover(&root, transaction.as_deref()) {
                 Ok(result) => {
                     let out = if json {
-                        serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
-                            r#"{"ok":false,"error":"serialize"}"#.to_string()
-                        })
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize"}"#.to_string())
                     } else if result.recovered.is_empty() {
                         "No incomplete transactions.".to_string()
                     } else {
@@ -99,9 +96,8 @@ fn main() -> ExitCode {
             match revert(&root, &receipt) {
                 Ok(result) => {
                     let out = if json {
-                        serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
-                            r#"{"ok":false,"error":"serialize"}"#.to_string()
-                        })
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize"}"#.to_string())
                     } else {
                         format!(
                             "revert ok: {} → new tx {}",
@@ -123,9 +119,8 @@ fn main() -> ExitCode {
             match gc(&root, dry_run) {
                 Ok(result) => {
                     let out = if json {
-                        serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
-                            r#"{"ok":false,"error":"serialize"}"#.to_string()
-                        })
+                        serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize"}"#.to_string())
                     } else if dry_run {
                         format!(
                             "gc dry-run: {} unreferenced object(s)",

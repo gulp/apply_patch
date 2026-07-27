@@ -88,10 +88,7 @@ fn collect_refs(root: &Path) -> Result<BTreeSet<String>, PublicError> {
     let tx_dir = transactions_dir(root);
     if tx_dir.is_dir() {
         for ent in fs::read_dir(&tx_dir).map_err(|e| {
-            PublicError::new(
-                ErrorCode::IoError,
-                format!("Cannot read transactions: {e}"),
-            )
+            PublicError::new(ErrorCode::IoError, format!("Cannot read transactions: {e}"))
         })? {
             let ent = ent.map_err(|e| {
                 PublicError::new(ErrorCode::IoError, format!("Cannot read tx entry: {e}"))

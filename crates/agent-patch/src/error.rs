@@ -268,6 +268,11 @@ impl PublicError {
         self
     }
 
+    pub fn with_repair_patch(mut self, patch: impl Into<String>) -> Self {
+        self.repair_patch = Some(patch.into());
+        self
+    }
+
     pub fn exit_code(&self) -> u8 {
         self.code.exit_code()
     }

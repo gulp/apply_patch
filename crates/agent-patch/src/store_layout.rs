@@ -17,7 +17,13 @@ pub fn agent_patch_dir(root: &Path) -> PathBuf {
 
 pub fn ensure_layout(root: &Path) -> Result<PathBuf, PublicError> {
     let base = agent_patch_dir(root);
-    for sub in [OBJECTS_DIR, TRANSACTIONS_DIR, RECEIPTS_DIR, EVENTS_DIR, SHADOWS_DIR] {
+    for sub in [
+        OBJECTS_DIR,
+        TRANSACTIONS_DIR,
+        RECEIPTS_DIR,
+        EVENTS_DIR,
+        SHADOWS_DIR,
+    ] {
         let p = base.join(sub);
         std::fs::create_dir_all(&p).map_err(|e| {
             PublicError::new(

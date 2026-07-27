@@ -20,11 +20,7 @@ impl RootLock {
         let path = lock_path(root);
         let deadline = Instant::now() + timeout;
         loop {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut f) => {
                     let meta = format!("pid={}\n", std::process::id());
                     let _ = f.write_all(meta.as_bytes());

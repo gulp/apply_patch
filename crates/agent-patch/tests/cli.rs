@@ -559,12 +559,115 @@ fn revert_restores_mode_bits() {
         .success();
     let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o750);
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        "#!/bin/sh\necho hi\n"
+    assert_eq!(fs::read_to_string(&path).unwrap(), "#!/bin/sh\necho hi\n");
+}
+
+#[test]
+fn ambiguous_includes_repair_patch() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("f.txt"), "x\ny\nx\ny\n").unwrap();
+    let patch = r#"*** Begin Patch
+*** Update File: f.txt
+@@
+-x
++z
+*** End Patch
+"#;
+    let assert = bin()
+        .current_dir(dir.path())
+        .arg("--json")
+        .write_stdin(patch)
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("HUNK_AMBIGUOUS"))
+        .stdout(predicate::str::contains("repair_patch"));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let repair = v["error"]["repair_patch"].as_str().unwrap();
+    assert!(repair.contains("*** Begin Patch"));
+    assert!(repair.contains("*** Update File: f.txt"));
+}
+
+#[test]
+fn risk_refuse_blocks_fuzzy_accept() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("f.txt"), "hello world\n").unwrap();
+    let patch = r#"*** Begin Patch
+*** Update File: f.txt
+@@
+-hello world 
++hello there
+*** End Patch
+"#;
+    bin()
+        .current_dir(dir.path())
+        .args(["--json", "--fuzzy=rstrip", "--risk=refuse"])
+        .write_stdin(patch)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("RISK_REFUSED"));
+}
+
+#[test]
+fn risk_warn_surfaces_fuzzy_findings() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("f.txt"), "hello world\n").unwrap();
+    let patch = r#"*** Begin Patch
+*** Update File: f.txt
+@@
+-hello world 
++hello there
+*** End Patch
+"#;
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["--json", "--fuzzy=rstrip", "--risk=warn"])
+        .write_stdin(patch)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let warnings = v["warnings"].as_array().unwrap();
+    assert!(!warnings.is_empty(), "{v}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("Rstrip")),
+        "{v}"
     );
 }
 
-
-
-
+#[test]
+fn verify_timeout_flag_trips() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+    let patch = dir.path().join("p.patch");
+    fs::write(
+        &patch,
+        "*** Begin Patch\n*** Update File: a.txt\n@@\n-a\n+A\n*** End Patch\n",
+    )
+    .unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "--json",
+            "--verify-timeout",
+            "1",
+            "--verify",
+            patch.to_str().unwrap(),
+            "--",
+            "sleep",
+            "30",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["error"]["code"], "VERIFY_TIMEOUT");
+    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "a\n");
+}

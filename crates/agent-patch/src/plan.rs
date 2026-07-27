@@ -18,6 +18,8 @@ pub struct PatchPlan {
     pub summary: PlanSummary,
     pub match_evidence: Vec<MatchEvidence>,
     pub plan_digest: String,
+    /// Populated when `--risk=warn` and findings exist.
+    pub risk_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -239,7 +241,7 @@ pub fn build_plan_with(
         }
     }
 
-    enforce_risk(&match_evidence, opts.risk)?;
+    let risk_warnings = enforce_risk(&match_evidence, opts.risk)?;
 
     entries.sort_by(|a, b| a.path().cmp(b.path()));
     let plan_digest = compute_plan_digest(&root, &entries);
@@ -251,6 +253,7 @@ pub fn build_plan_with(
         summary,
         match_evidence,
         plan_digest,
+        risk_warnings,
     })
 }
 
@@ -323,11 +326,7 @@ pub fn execution_plan_json(plan: &PatchPlan, include_diffs: bool) -> ExecutionPl
                 lines_deleted: m.counts.lines_deleted,
                 unified_diff: if include_diffs {
                     let after = String::from_utf8_lossy(&m.after_bytes);
-                    Some(unified_diff(
-                        m.path.as_str(),
-                        &m.before.text,
-                        &after,
-                    ))
+                    Some(unified_diff(m.path.as_str(), &m.before.text, &after))
                 } else {
                     None
                 },

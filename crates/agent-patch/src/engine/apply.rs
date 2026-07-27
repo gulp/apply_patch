@@ -22,7 +22,13 @@ pub fn apply_update(
     newline: &str,
     final_newline: bool,
 ) -> Result<AppliedText, PublicError> {
-    apply_update_with(base, update, newline, final_newline, MatchOptions::default())
+    apply_update_with(
+        base,
+        update,
+        newline,
+        final_newline,
+        MatchOptions::default(),
+    )
 }
 
 pub fn apply_update_with(

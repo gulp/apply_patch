@@ -150,7 +150,14 @@ pub fn materialize(
         }
     }
 
-    overlay_plan(&shadow_root, plan, opts, started, &mut files_copied, &mut bytes_copied)?;
+    overlay_plan(
+        &shadow_root,
+        plan,
+        opts,
+        started,
+        &mut files_copied,
+        &mut bytes_copied,
+    )?;
 
     let representative = opts.mode == ShadowMode::Tree;
     Ok(ShadowWorkspace {
@@ -258,9 +265,8 @@ fn copy_tree(
         })?;
         let ft = meta.file_type();
         if ft.is_dir() {
-            fs::create_dir_all(&dest).map_err(|e| {
-                PublicError::new(ErrorCode::IoError, format!("shadow mkdir: {e}"))
-            })?;
+            fs::create_dir_all(&dest)
+                .map_err(|e| PublicError::new(ErrorCode::IoError, format!("shadow mkdir: {e}")))?;
             copy_tree(
                 real_root,
                 &src,
@@ -317,9 +323,8 @@ fn copy_symlink_safe(real_root: &Path, src: &Path, dest: &Path) -> Result<(), Pu
         ));
     }
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            PublicError::new(ErrorCode::IoError, format!("shadow mkdir: {e}"))
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|e| PublicError::new(ErrorCode::IoError, format!("shadow mkdir: {e}")))?;
     }
     #[cfg(unix)]
     {
@@ -343,9 +348,8 @@ fn copy_symlink_safe(real_root: &Path, src: &Path, dest: &Path) -> Result<(), Pu
 
 fn copy_file_no_hardlink(src: &Path, dest: &Path) -> Result<(), PublicError> {
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            PublicError::new(ErrorCode::IoError, format!("shadow mkdir: {e}"))
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|e| PublicError::new(ErrorCode::IoError, format!("shadow mkdir: {e}")))?;
     }
     // Prefer copy (never hard link). Attempt clonefile/reflink via std::fs::copy
     // which on Linux may use copy_file_range; still a distinct inode.
@@ -364,7 +368,10 @@ fn copy_file_no_hardlink(src: &Path, dest: &Path) -> Result<(), PublicError> {
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = in_f.read(&mut buf).map_err(|e| {
-            PublicError::new(ErrorCode::IoError, format!("Cannot read {}: {e}", src.display()))
+            PublicError::new(
+                ErrorCode::IoError,
+                format!("Cannot read {}: {e}", src.display()),
+            )
         })?;
         if n == 0 {
             break;
@@ -420,10 +427,7 @@ fn check_budgets(
     if started.elapsed() > opts.max_wall {
         return Err(PublicError::new(
             ErrorCode::ShadowLimitExceeded,
-            format!(
-                "Shadow wall time exceeded {}s",
-                opts.max_wall.as_secs()
-            ),
+            format!("Shadow wall time exceeded {}s", opts.max_wall.as_secs()),
         ));
     }
     if files > opts.max_files {
@@ -444,10 +448,10 @@ fn check_budgets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path_policy::CanonicalRoot;
-    use crate::plan::{PlanSummary, PlannedCreate};
     use crate::error::ContentFingerprint;
     use crate::path_policy::parse_repo_path;
+    use crate::path_policy::CanonicalRoot;
+    use crate::plan::{PlanSummary, PlannedCreate};
     use std::collections::BTreeMap;
 
     fn tiny_plan(root: &Path, path: &str, bytes: &[u8]) -> PatchPlan {
@@ -469,6 +473,7 @@ mod tests {
             match_evidence: vec![],
             plan_digest: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .into(),
+            risk_warnings: vec![],
         }
     }
 

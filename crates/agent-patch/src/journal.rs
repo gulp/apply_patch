@@ -88,7 +88,10 @@ impl TransactionJournal {
                 .truncate(true)
                 .open(&tmp)
                 .map_err(|e| {
-                    PublicError::new(ErrorCode::IoError, format!("Cannot write journal temp: {e}"))
+                    PublicError::new(
+                        ErrorCode::IoError,
+                        format!("Cannot write journal temp: {e}"),
+                    )
                 })?;
             f.write_all(&bytes).map_err(|e| {
                 PublicError::new(ErrorCode::IoError, format!("Cannot write journal: {e}"))

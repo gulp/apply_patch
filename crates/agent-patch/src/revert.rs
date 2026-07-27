@@ -56,11 +56,7 @@ pub fn revert(root: &Path, receipt_path: &Path) -> Result<RevertResult, PublicEr
     }
 
     let plan_digest = ContentFingerprint::blake3(
-        format!(
-            "revert:{}:{}",
-            receipt.transaction_id, receipt.plan_digest
-        )
-        .as_bytes(),
+        format!("revert:{}:{}", receipt.transaction_id, receipt.plan_digest).as_bytes(),
     )
     .labeled_hex();
     let mut journal = TransactionJournal::new(txid.clone(), plan_digest.clone(), journal_entries);
@@ -299,9 +295,7 @@ fn write_bytes_atomic(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), Public
             .create(true)
             .truncate(true)
             .open(&tmp)
-            .map_err(|e| {
-                PublicError::new(ErrorCode::AtomicCommitFailed, format!("temp: {e}"))
-            })?;
+            .map_err(|e| PublicError::new(ErrorCode::AtomicCommitFailed, format!("temp: {e}")))?;
         f.write_all(bytes)
             .map_err(|e| PublicError::new(ErrorCode::AtomicCommitFailed, format!("write: {e}")))?;
         f.sync_all()

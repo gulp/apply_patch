@@ -173,11 +173,14 @@ pub fn list_receipt_paths(root: &Path) -> Result<Vec<PathBuf>, PublicError> {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for ent in fs::read_dir(&dir).map_err(|e| {
-        PublicError::new(ErrorCode::IoError, format!("Cannot read receipts: {e}"))
-    })? {
+    for ent in fs::read_dir(&dir)
+        .map_err(|e| PublicError::new(ErrorCode::IoError, format!("Cannot read receipts: {e}")))?
+    {
         let ent = ent.map_err(|e| {
-            PublicError::new(ErrorCode::IoError, format!("Cannot read receipt entry: {e}"))
+            PublicError::new(
+                ErrorCode::IoError,
+                format!("Cannot read receipt entry: {e}"),
+            )
         })?;
         if ent.file_type().map(|t| t.is_file()).unwrap_or(false)
             && ent.path().extension().and_then(|e| e.to_str()) == Some("json")
@@ -238,8 +241,8 @@ fn now_secs() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objects::{object_rel_path, put_object};
     use crate::journal::{EntryProgress, JournalEntry};
+    use crate::objects::{object_rel_path, put_object};
 
     #[test]
     fn rejects_hashes_only_update() {

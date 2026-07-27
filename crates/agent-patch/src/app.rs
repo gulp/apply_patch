@@ -8,8 +8,8 @@ use crate::error::{ErrorCode, Limits, PublicError};
 use crate::events::{self, EventRecord};
 use crate::fs::{FileSystem, RealFileSystem};
 use crate::input::read_patch_bytes;
-use crate::path_policy::{check_path_collisions, CanonicalRoot};
 use crate::match_opts::MatchOptions;
+use crate::path_policy::{check_path_collisions, CanonicalRoot};
 use crate::plan::{build_plan_with, execution_plan_json, PlannedChange};
 use crate::protocol::parse_patch;
 use crate::shadow::{materialize, ShadowMode, ShadowOptions};
@@ -18,6 +18,7 @@ use crate::telemetry::{debug_log, InvocationTimers};
 use crate::validate::{validate_against_snapshots, validate_document};
 use crate::verify::{run_verify, VerifyOptions};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -28,6 +29,8 @@ pub struct AppConfig {
     pub verify: bool,
     pub verify_argv: Vec<String>,
     pub verify_shell: Option<String>,
+    pub verify_timeout: Duration,
+    pub verify_output_limit: u64,
     pub shadow_mode: ShadowMode,
     pub shadow_include_caches: bool,
     pub match_opts: MatchOptions,
@@ -58,7 +61,7 @@ pub fn run(config: AppConfig) -> AppOutput {
             } else if config.quiet {
                 String::new()
             } else {
-                emit_success_human(&success.summary, mode)
+                emit_success_human(&success.summary, mode, &success.warnings)
             };
             AppOutput {
                 exit_code: 0,
@@ -133,6 +136,7 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
                     plan: None,
                     verify: None,
                     already_applied: true,
+                    warnings: Vec::new(),
                 });
             }
             IdempotentStatus::Partial => {
@@ -164,25 +168,26 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
         };
         let shadow = materialize(&root.path, &plan, &shadow_opts)?;
         debug_log("shadow", &format!("files={}", shadow.report.files_copied));
-        let (program, args_owned): (String, Vec<String>) = if let Some(script) = &config.verify_shell
-        {
-            (
-                "/bin/sh".into(),
-                vec!["-c".into(), script.clone()],
-            )
-        } else {
-            (
-                config.verify_argv[0].clone(),
-                config.verify_argv[1..].to_vec(),
-            )
-        };
+        let (program, args_owned): (String, Vec<String>) =
+            if let Some(script) = &config.verify_shell {
+                ("/bin/sh".into(), vec!["-c".into(), script.clone()])
+            } else {
+                (
+                    config.verify_argv[0].clone(),
+                    config.verify_argv[1..].to_vec(),
+                )
+            };
         let verify_report = match run_verify(
             &shadow,
             &program,
             &args_owned,
             &plan.plan_digest,
             &format!("{}", std::process::id()),
-            &VerifyOptions::default(),
+            &VerifyOptions {
+                timeout: config.verify_timeout,
+                max_stream_bytes: config.verify_output_limit,
+                ..VerifyOptions::default()
+            },
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -285,7 +290,11 @@ enum IdempotentStatus {
 }
 
 fn assess_idempotent(
-    ops: &[(usize, crate::path_policy::RepoPath, &crate::protocol::ast::FileOperation)],
+    ops: &[(
+        usize,
+        crate::path_policy::RepoPath,
+        &crate::protocol::ast::FileOperation,
+    )],
     snapshots: &std::collections::BTreeMap<
         crate::path_policy::RepoPath,
         crate::snapshot::FileSnapshot,
@@ -420,7 +429,7 @@ fn build_success(
             Some(execution_plan_json(plan, true)),
             Some(plan.plan_digest.clone()),
         )
-    } else if verify_report.is_some() {
+    } else if verify_report.is_some() || !plan.risk_warnings.is_empty() {
         (2u32, None, Some(plan.plan_digest.clone()))
     } else {
         (1u32, None, Some(plan.plan_digest.clone()))
@@ -447,6 +456,7 @@ fn build_success(
         plan: plan_json,
         verify: verify_report,
         already_applied,
+        warnings: plan.risk_warnings.clone(),
     }
 }
 

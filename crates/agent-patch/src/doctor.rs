@@ -81,7 +81,11 @@ pub fn doctor(root: &Path) -> Result<DoctorReport, PublicError> {
 
     let shadow_dir = crate::store_layout::agent_patch_dir(root).join("shadows");
     let orphan_shadows = std::fs::read_dir(&shadow_dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
         .unwrap_or(0);
     checks.push(StatusCheck {
         name: "shadow_retention".into(),

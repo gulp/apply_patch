@@ -62,10 +62,7 @@ pub struct MatchOptions {
 }
 
 /// Fail closed when risk findings exceed the configured gate.
-pub fn enforce_risk(evidence: &[MatchEvidence], mode: RiskMode) -> Result<(), PublicError> {
-    if mode == RiskMode::Off {
-        return Ok(());
-    }
+pub fn risk_findings(evidence: &[MatchEvidence]) -> Vec<String> {
     let mut findings = Vec::new();
     for e in evidence {
         if e.nearby_twins > 0 {
@@ -88,18 +85,31 @@ pub fn enforce_risk(evidence: &[MatchEvidence], mode: RiskMode) -> Result<(), Pu
             ));
         }
     }
-    if findings.is_empty() {
-        return Ok(());
-    }
-    let detail = findings.join("; ");
+    findings
+}
+
+/// Fail closed when risk findings exceed the configured gate.
+///
+/// Returns warning strings for `--risk=warn` (empty when off or no findings).
+pub fn enforce_risk(
+    evidence: &[MatchEvidence],
+    mode: RiskMode,
+) -> Result<Vec<String>, PublicError> {
+    let findings = risk_findings(evidence);
     match mode {
-        RiskMode::Off => Ok(()),
-        RiskMode::Warn => Ok(()), // caller may surface via diagnostics later
-        RiskMode::Refuse => Err(PublicError::new(
-            ErrorCode::RiskRefused,
-            format!("Match risk gate refused apply: {detail}"),
-        )
-        .with_hint("Regenerate a more unique hunk, or pass --risk=warn|off explicitly.")),
+        RiskMode::Off => Ok(Vec::new()),
+        RiskMode::Warn => Ok(findings),
+        RiskMode::Refuse => {
+            if findings.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Err(PublicError::new(
+                    ErrorCode::RiskRefused,
+                    format!("Match risk gate refused apply: {}", findings.join("; ")),
+                )
+                .with_hint("Regenerate a more unique hunk, or pass --risk=warn|off explicitly."))
+            }
+        }
     }
 }
 
