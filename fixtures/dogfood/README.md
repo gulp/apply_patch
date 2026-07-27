@@ -14,3 +14,5 @@ P
 ```
 
 With direnv (`.envrc` → `PATH_add scripts`), the bare `agent-patch` command works; otherwise use `scripts/agent-patch`. Always pass `--root fixtures/dogfood` so paths stay inside this folder.
+
+The release gate `scripts/dogfood` rebuilds the binary and runs localized apply cases plus post-v1 plan, verify, receipt/revert, status/doctor, recover, and idempotent checks in a temp tree (not this fixture directory).

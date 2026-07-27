@@ -67,6 +67,13 @@ run_json() {
   "$AP" --json --root "$DF" "$@" "$patch_file"
 }
 
+# Verify argv is `last=true`; patch path must appear before `--`.
+run_verify() {
+  local patch_file=$1
+  shift
+  "$AP" --json --root "$DF" --verify "$patch_file" -- "$@"
+}
+
 # T1 single localized
 cat >"$DF/t1.patch" <<'PATCH'
 *** Begin Patch
@@ -321,6 +328,150 @@ if run_json "$DF/tz.patch" >/tmp/ap-dog-out.json; then
   fi
 else
   bad TZ-end-of-file "$(cat /tmp/ap-dog-out.json)"
+fi
+
+
+# --- Post-v1 reliability gates (plan / verify / receipt / recover / status) ---
+
+# T8 --plan is write-free and emits plan_digest
+cat >"$DF/t8.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/new_module.rs
+@@
+-pub const FLAG: bool = true;
++pub const FLAG: bool = false;
+*** End Patch
+PATCH
+before=$(cat "$DF/src/new_module.rs")
+set +e
+out=$(run_json "$DF/t8.patch" --plan 2>&1)
+ec=$?
+set -e
+after=$(cat "$DF/src/new_module.rs")
+if [[ $ec -eq 0 && "$before" == "$after" && "$out" == *'"mode": "plan"'* && "$out" == *plan_digest* ]]; then
+  ok T8-plan-no-write
+else
+  bad T8-plan-no-write "ec=$ec out=$out"
+fi
+
+# T9 verify: failure leaves root; success promotes
+cat >"$DF/t9.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/new_module.rs
+@@
+-pub const FLAG: bool = true;
++pub const FLAG: bool = false;
+*** End Patch
+PATCH
+before=$(cat "$DF/src/new_module.rs")
+set +e
+outf=$(run_verify "$DF/t9.patch" false 2>&1)
+ecf=$?
+set -e
+mid=$(cat "$DF/src/new_module.rs")
+set +e
+outs=$(run_verify "$DF/t9.patch" true 2>&1)
+ecs=$?
+set -e
+after=$(cat "$DF/src/new_module.rs")
+if [[ $ecf -ne 0 && "$before" == "$mid" && $ecs -eq 0 && "$after" == *'FLAG: bool = false'* ]]; then
+  ok T9-verify-gate
+else
+  bad T9-verify-gate "ecf=$ecf ecs=$ecs mid=$mid after=$after outf=$outf outs=$outs"
+fi
+
+# T10 receipt export + revert restores exact bytes
+cat >"$DF/t10.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: docs/README.md
+@@
+-Timeout is 45 seconds.
++Timeout is 60 seconds.
+*** End Patch
+PATCH
+before=$(cat "$DF/docs/README.md")
+if run_json "$DF/t10.patch" --receipt "$DF/t10.receipt.json" >/tmp/ap-dog-out.json \
+  && test -f "$DF/t10.receipt.json" \
+  && grep -q '60 seconds' "$DF/docs/README.md"; then
+  set +e
+  "$AP" revert --json --root "$DF" "$DF/t10.receipt.json" >/tmp/ap-dog-revert.json
+  ecr=$?
+  set -e
+  after=$(cat "$DF/docs/README.md")
+  if [[ $ecr -eq 0 && "$before" == "$after" ]]; then
+    ok T10-receipt-revert
+  else
+    bad T10-receipt-revert "ecr=$ecr after=$after $(cat /tmp/ap-dog-revert.json)"
+  fi
+else
+  bad T10-receipt-revert "apply/export failed: $(cat /tmp/ap-dog-out.json)"
+fi
+
+# T11 status + doctor healthy after mutations
+set +e
+outs=$("$AP" status --json --root "$DF" 2>&1)
+ecs=$?
+outd=$("$AP" doctor --json --root "$DF" 2>&1)
+ecd=$?
+set -e
+if [[ $ecs -eq 0 && "$outs" == *'"ok": true'* && $ecd -eq 0 && "$outd" == *'"ok": true'* ]]; then
+  ok T11-status-doctor
+else
+  bad T11-status-doctor "ecs=$ecs ecd=$ecd outs=$outs outd=$outd"
+fi
+
+# T12 recover clears PREPARED incomplete journal (no visible mutation)
+mkdir -p "$DF/.agent-patch/transactions/deadbeef" "$DF/.agent-patch/objects" "$DF/.agent-patch/receipts"
+cat >"$DF/.agent-patch/transactions/deadbeef/journal.json" <<'JSON'
+{
+  "version": 2,
+  "transaction_id": "deadbeef",
+  "plan_digest": "blake3:dogfood",
+  "state": "PREPARED",
+  "created_at": "0",
+  "entries": []
+}
+JSON
+set +e
+outs=$("$AP" status --json --root "$DF" 2>&1)
+ecs=$?
+set -e
+if [[ $ecs -ne 0 ]]; then
+  set +e
+  outr=$("$AP" recover --transaction deadbeef --json --root "$DF" 2>&1)
+  ecr=$?
+  outs2=$("$AP" status --json --root "$DF" 2>&1)
+  ecs2=$?
+  set -e
+  if [[ $ecr -eq 0 && "$outr" == *rolled_back* && $ecs2 -eq 0 && "$outs2" == *'"ok": true'* ]]; then
+    ok T12-recover-prepared
+  else
+    bad T12-recover-prepared "ecr=$ecr ecs2=$ecs2 outr=$outr outs2=$outs2"
+  fi
+else
+  bad T12-recover-prepared "status unexpectedly ok with PREPARED journal: $outs"
+fi
+
+# T13 idempotent replay of already-applied after-state
+cat >"$DF/t13.patch" <<'PATCH'
+*** Begin Patch
+*** Update File: src/new_module.rs
+@@
+-pub const FLAG: bool = true;
++pub const FLAG: bool = false;
+*** End Patch
+PATCH
+# FLAG is already false from T9; idempotent should succeed without rewriting
+before=$(cat "$DF/src/new_module.rs")
+set +e
+out=$(run_json "$DF/t13.patch" --idempotent 2>&1)
+ec=$?
+set -e
+after=$(cat "$DF/src/new_module.rs")
+if [[ $ec -eq 0 && "$before" == "$after" && "$out" == *'"already_applied": true'* ]]; then
+  ok T13-idempotent
+else
+  bad T13-idempotent "ec=$ec out=$out"
 fi
 
 note ""
