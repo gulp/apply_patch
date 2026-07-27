@@ -21,7 +21,8 @@ pub struct AppliedPatchDelta {
 ├── transactions/<txid>/
 │   └── journal.json
 ├── receipts/<txid>.json
-└── events/                   # optional JSONL
+├── shadows/<id>/             # verify workspaces
+└── events/                   # optional JSONL (AGENT_PATCH_EVENT_LOG)
 ```
 
 ## Journal states

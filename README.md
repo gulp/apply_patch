@@ -59,7 +59,7 @@ Use this when you want `agent-patch` outside this repo. Day-to-day work in-tree 
 agent-patch [OPTIONS] [PATCH_FILE] [-- <VERIFY_ARGV>...] [COMMAND]
 ```
 
-If `PATCH_FILE` is omitted, the patch is read from stdin. Modes `--check`, `--plan`, and `--verify` are mutually exclusive with each other (and with a plain mutating apply).
+If `PATCH_FILE` is omitted, the patch is read from stdin. Modes `--check`, `--plan`, and `--verify` / `--verify-shell` are mutually exclusive with each other (and with a plain mutating apply). `--verify-shell` cannot combine with argv after `--`.
 
 ### Apply / check / plan / verify options
 
@@ -144,6 +144,8 @@ scripts/agent-patch --receipt /tmp/r.json < change.patch
 scripts/agent-patch revert /tmp/r.json
 ```
 
+Receipts reference CAS before-images and record Unix `permissions.mode` (plus `executable`) so revert restores bytes and mode bits.
+
 Verify-gated apply:
 
 ```bash
@@ -212,7 +214,7 @@ Full grammar: [docs/protocol.md](docs/protocol.md). Contracts: [docs/contract-v1
 3. With `--idempotent`, prove full after-state already present → success (`already_applied`) without mutation; mixed partial replay → `PARTIALLY_APPLIED`.
 4. Build an immutable execution plan (`locate_chunks` → `emit_chunks`, optional fuzzy/risk).
 5. `--check` / `--plan`: report and exit without writes (`--plan` includes plan digest + diffs).
-6. `--verify`: materialize a shadow (default `tree` with cache excludes), run the argv command with `cwd` = shadow root, discard the shadow and leave the real root unchanged on failure/timeout/signal; on success, promote via the same journaled commit path as apply.
+6. `--verify` / `--verify-shell`: materialize a shadow (default `tree` with cache excludes), run the verify command with `cwd` = shadow root (argv after `--`, or `/bin/sh -c` for `--verify-shell`), discard the shadow and leave the real root unchanged on failure/timeout/signal; on success, promote via the same journaled commit path as apply.
 7. Mutating apply / promote: acquire `.agent-patch/lock`, refuse incomplete journals, store before-image objects, write a durable journal (`PREPARED` → `COMMITTING` → `COMPLETED`), commit via same-directory temps and atomic rename, finalize an internal receipt under `.agent-patch/receipts/`.
 
 `--check` and `--plan` never create temps or mutate the tree. Hard links are never used for shadows or rollback storage.
@@ -225,7 +227,8 @@ Full grammar: [docs/protocol.md](docs/protocol.md). Contracts: [docs/contract-v1
 ├── objects/<blake3>              # immutable before-images
 ├── transactions/<txid>/journal.json
 ├── receipts/<txid>.json
-└── shadows/                      # verify workspaces (removed on success)
+├── shadows/                      # verify workspaces (removed on Drop / recover)
+└── events/                       # optional JSONL when AGENT_PATCH_EVENT_LOG is set
 ```
 
 Details: [docs/design/transaction-journal.md](docs/design/transaction-journal.md), [docs/schemas/](docs/schemas/).
@@ -251,12 +254,14 @@ Granular codes (`HUNK_NOT_FOUND`, `RECOVERY_REQUIRED`, `VERIFY_TIMEOUT`, …): [
 
 **JSON mode (`--json`):** one JSON object on stdout (`ok: true` with summary/files, or `ok: false` with `error`). Plan/verify/oracle fields use `version: 2` when present. Content fingerprints use BLAKE3. Successful applies may include `transaction_id`; `--idempotent` successes may set `already_applied: true`. Errors may include `candidates`, `hint`, `root_changed`, and `recovery_required`.
 
+**Event log:** with `AGENT_PATCH_EVENT_LOG=1` or a file path, append versioned JSONL metadata records (phase, ok, transaction_id / plan_digest) without patch or file bodies. Event-log failures never change exit semantics.
+
 ## Development
 
 ```bash
 scripts/test      # cargo fmt --check, clippy -D warnings, cargo test
 scripts/lint      # fmt --check + clippy
-scripts/dogfood   # end-to-end gate (multi-hunk/file, stale, ambiguous, add/delete, path safety, --check, EOF)
+scripts/dogfood   # end-to-end gate (classic apply + plan/verify/receipt/recover/idempotent)
 scripts/bench     # Criterion: cargo bench --workspace
 ```
 
@@ -265,12 +270,13 @@ Tests of note:
 | Suite | What it covers |
 | --- | --- |
 | `cargo test --workspace` | Unit + CLI integration (atomicity, concurrency, path safety, limits, journal/receipt/verify) |
+| `cargo test --features failpoints --test crash_matrix` | Killpoint abort → `recover` all-before / all-after |
 | `tests/codex_scenarios.rs` | Portable Codex fixture subset under `tests/fixtures/codex-scenarios/` |
-| `scripts/dogfood` | Acceptance gate; rebuilds release before running |
+| `scripts/dogfood` | Acceptance gate (T1–T13); rebuilds release before running |
 | `fuzz/` | `cargo-fuzz` targets: `parse_patch`, `path_policy`, `apply_update` (see [fuzz/README.md](fuzz/README.md)) |
 | `benches/apply_update.rs` | Locate→emit throughput on a multi-thousand-line buffer |
 
-CI (Linux and macOS): `fmt` + `clippy -D warnings` + `cargo test --workspace` + `scripts/dogfood`.
+CI (Linux and macOS): `fmt` + `clippy -D warnings` + `cargo test --workspace` + `cargo test --features failpoints crash_matrix` + `scripts/dogfood`.
 
 Workspace layout:
 

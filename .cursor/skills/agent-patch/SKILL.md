@@ -38,6 +38,7 @@ Optional bare command in-repo: `export PATH="$PWD/scripts:$PATH"` or `cp .envrc.
 | `--check` | Validate in memory; no writes |
 | `--plan --json` | Immutable execution plan + diffs; no writes |
 | `--verify -- <PROG> [ARG…]` | Shadow + bounded argv; promote only on exit 0 |
+| `--verify-shell SCRIPT` | Explicit shell escape for verify (`/bin/sh -c`) |
 | `--fuzzy off\|rstrip\|strip` | Unique-only fuzzy ladder (default `off`) |
 | `--risk off\|warn\|refuse` | Match-risk gate (default `off`) |
 | `--idempotent` | Full after-state already present → success |
@@ -92,6 +93,7 @@ Multi-file / add / delete / EOF examples: see [examples.md](examples.md). Protoc
 - Optional `*** Hash: blake3 <hex>` pin precedes locate.
 - Paths are repo-relative under `--root` (default: cwd).
 - Incomplete journals block mutation until `recover`.
+- Optional `AGENT_PATCH_EVENT_LOG=1` (or a path) for metadata JSONL; never required for correctness.
 
 ## After apply
 

@@ -6,7 +6,7 @@ See [design/overview.md](./design/overview.md).
 CLI → app → parse → path policy → snapshot → validate → plan
          → engine (locate_chunks → emit_chunks)
          → [--check|--plan] emit and stop
-         → [--verify] shadow → verify argv → promote
+         → [--verify|--verify-shell] shadow → verify command → promote
          → commit (lock, objects, journal, rename, receipt)
          → recover / revert / gc / status / doctor
 ```

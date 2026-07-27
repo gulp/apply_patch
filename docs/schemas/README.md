@@ -9,3 +9,5 @@ Frozen shapes for plan / receipt / journal artifacts. Public CLI JSON uses `vers
 | [journal.schema.json](./journal.schema.json) | `.agent-patch/transactions/*/journal.json` |
 
 Canonical plan digest encoding: sorted repo-relative paths; no unordered maps in digest-bearing structures; `plan_digest` is `blake3:` + 64 hex chars.
+
+Receipt `permissions` may include `executable` and optional Unix `mode` bits used by `revert`.

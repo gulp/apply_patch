@@ -14,7 +14,7 @@ CLI (clap) → app::run
                ├─ validate + plan (fuzzy / risk)
                ├─ apply_update         (pure text)
                ├─ --check / --plan     (stop; no FS writes)
-               ├─ --verify             (shadow + argv; promote on success)
+               ├─ --verify / --verify-shell (shadow + command; promote on success)
                └─ commit_plan          (lock, objects, journal, rename, receipt)
 ```
 
@@ -53,7 +53,7 @@ CLI (clap) → app::run
 5. `*** End of File` with EOF-prefer exact locate; `*** Move to:` deferred ([`move.md`](move.md)).
 6. Observational diffs via `similar` only.
 7. Locate all chunks on the original lines, then forward-cursor emit (`engine/locate.rs`, `engine/emit.rs`).
-8. `--verify` uses a representative tree shadow under documented excludes; hard links forbidden.
+8. `--verify` / `--verify-shell` use a representative tree shadow under documented excludes; hard links forbidden.
 9. Incomplete journals block mutation until `recover`.
 
 ## Data flow
@@ -63,7 +63,7 @@ patch bytes → limits → parse → path validate → snapshot → op↔state v
   → optional idempotent assess
   → in-memory plan (Update/Add/Delete) → risk gate → PATCH_NO_EFFECT check
   → --check / --plan? emit and stop
-  → --verify? shadow → argv → on success continue
+  → --verify / --verify-shell? shadow → command → on success continue
   → lock → refuse incomplete journals → put before-images → journal PREPARED
   → COMMITTING → rename/delete → COMPLETED → receipt → emit
 ```
@@ -71,7 +71,8 @@ patch bytes → limits → parse → path validate → snapshot → op↔state v
 ## Public surface
 
 ```text
-scripts/agent-patch [--check|--plan|--verify] [--fuzzy …] [--risk …] [--idempotent]
+scripts/agent-patch [--check|--plan|--verify|--verify-shell SCRIPT]
+                    [--fuzzy …] [--risk …] [--idempotent]
                     [--shadow-mode tree|touched] [--shadow-include-caches]
                     [--receipt PATH] [--json] [--quiet] [--root PATH]
                     [--max-files N] [--max-patch-bytes N] [--max-file-bytes N]
@@ -102,5 +103,4 @@ AST transforms; fuzzy default; Git stage/commit; MCP requirement; binary files; 
 | `*** Move to:` | Codex/Agents/OpenClaw/OpenCode; collision + rollback — [`move.md`](move.md) |
 | Optional path list helper | OpenClaw-style preflight for harnesses |
 | Streaming patch parse | Codex `streaming_parser.rs`; only if >`max_patch_bytes` streaming is required |
-| `--verify-shell` | Explicit shell escape; argv verify is the default |
 | Unicode fuzzy normalize | Upstream ladder only; not enabled |

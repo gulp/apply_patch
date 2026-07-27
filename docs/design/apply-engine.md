@@ -134,6 +134,7 @@ class Chunk:
 - Unit: exact / ambiguous / not-found, `@@` anchors, EOF-prefer, CRLF file-wins matrix, multi-hunk locate→emit, fuzzy unique-only
 - Integration: CLI, atomicity, concurrency, path safety, limits, journal/receipt/verify/idempotent
 - Codex portable subset: `tests/fixtures/codex-scenarios/` + `tests/codex_scenarios.rs`
-- Dogfood: `scripts/dogfood` (includes EOF)
+- Dogfood: `scripts/dogfood` (classic apply + plan/verify/receipt/recover/idempotent)
+- Crash matrix: `cargo test --features failpoints --test crash_matrix`
 - Fuzz: `fuzz/fuzz_targets/{parse_patch,path_policy,apply_update}.rs`
 - Bench: `benches/apply_update.rs`

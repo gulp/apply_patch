@@ -93,6 +93,12 @@ scripts/agent-patch --plan --json < /tmp/change.patch
 scripts/agent-patch --verify -- cargo test -q < /tmp/change.patch
 ```
 
+## Verify via shell escape
+
+```bash
+scripts/agent-patch --verify-shell 'test -f src/lib.rs' < /tmp/change.patch
+```
+
 ## Receipt export and revert
 
 ```bash

@@ -45,3 +45,21 @@ Do not guess unsupported flags. Run `scripts/agent-patch --help`.
 Contract: [docs/contract-v1.md](docs/contract-v1.md), [docs/contract-v2.md](docs/contract-v2.md).  
 Protocol: [docs/protocol.md](docs/protocol.md).  
 Errors: [docs/errors.md](docs/errors.md).
+
+## Hard-won rules (keep short)
+
+**Facts**
+- Canonical CLI: `scripts/agent-patch` (release → debug → `cargo run`). Rebuild release after engine changes; `doctor` checks freshness.
+- Store: `<root>/.agent-patch/{lock,objects,transactions,receipts,shadows,events}`. Guarantee is recoverability to all-before/all-after — not multi-file atomic visibility.
+- Unique-exact default; `--fuzzy` unique-only (never first-match). `Move` / `translate` backlog. Docs: present tense only.
+- Verify: `--verify -- <PROG>…` or `--verify-shell`. Patch path **before** `--`. Subcommand flags on the subcommand (`revert --json --root …`), not top-level.
+- Clap: verify argv is `last = true` only — never combine with `trailing_var_arg` (exit 101 panic).
+- `recover`: mixed before/after across files → restore **all** before. Dead-PID lock reclaim OK; **never** delete journals/lock by hand or via stale-lock heuristics.
+- Leave `.envrc` untracked. Optional: `AGENT_PATCH_EVENT_LOG=1`. Crash matrix: `cargo test --features failpoints --test crash_matrix`. Gate: `scripts/dogfood`.
+
+**Do**
+- Write durable `PREPARED` journal + CAS before-images before any visible rename/delete; terminal `ROLLED_BACK` after successful in-process rollback (do not leave `ROLLING_BACK`).
+- Ignore `.agent-patch/` in fixture tree equality checks.
+
+**Don't**
+- Claim multi-file atomic visibility. Bypass argv/shell verify contract. Commit `.envrc`.

@@ -18,13 +18,14 @@ Public CLI JSON, execution plans, receipts, and journals use **`version: 2`** wh
 | `--check` | no | no | no | Exclusive with `--verify` / `--plan` |
 | `--plan` | no | no | no | Emits `ExecutionPlan`; exclusive with `--verify` |
 | `--verify -- <PROG> [ARG…]` | only on promote | only on promote | yes | Exclusive with `--check` / `--plan` |
+| `--verify-shell <SCRIPT>` | only on promote | only on promote | yes | Explicit `/bin/sh -c`; exclusive with argv `--` and with `--check` / `--plan` |
 | `revert <RECEIPT>` | yes | yes | no | New journaled inverse transaction |
 | `recover` | maybe | yes | no | Resolves incomplete journal |
 | `status` | no | no | no | Health report |
 | `doctor` | no | no | no | Env + health |
 | `gc [--dry-run]` | objects only | yes | no | Reference-safe |
 
-Mutual exclusions: `--check` ⊕ `--plan` ⊕ `--verify` ⊕ apply are distinct modes (check and plan are both read-only but still exclusive with each other for output clarity). `--verify` cannot combine with `--check` or `--plan`.
+Mutual exclusions: `--check` ⊕ `--plan` ⊕ (`--verify` | `--verify-shell`) ⊕ apply are distinct modes (check and plan are both read-only but still exclusive with each other for output clarity). `--verify` / `--verify-shell` cannot combine with `--check` or `--plan`, and cannot combine with each other (argv vs shell).
 
 ## Verify runner
 
@@ -100,6 +101,21 @@ Journal states: `PREPARED` → `COMMITTING` → `COMPLETED` | `ROLLING_BACK` →
 - Every successful mutation writes an internal receipt under `.agent-patch/receipts/`.
 - Before-images live in `.agent-patch/objects/<blake3>` — hashes-only receipts are invalid.
 - `--receipt <PATH>` exports a copy; `--verify` success does not auto-export a user path.
+- Optional `permissions.mode` (Unix bits) and `permissions.executable` are recorded for update/delete; revert prefers `mode` when present.
+
+## Observability
+
+- Optional JSONL event log via `AGENT_PATCH_EVENT_LOG=1` (`.agent-patch/events/events.jsonl`) or a file path.
+- Records are metadata-only (phase, ok, transaction_id / plan_digest); never required for correctness.
+
+## Crash / recover
+
+- Incomplete journals block new writers (`RECOVERY_REQUIRED`) until `recover`.
+- `COMMITTING` with every path already at after-identity → finalize `COMPLETED`.
+- `COMMITTING` / `ROLLING_BACK` with not-all-after (including mixed before/after across files) → restore **all** before-images → `ROLLED_BACK`.
+- Paths matching neither before nor after → `RECOVERY_AMBIGUOUS`.
+- Dead-PID lock files may be reclaimed; journals are never deleted by lock heuristics.
+- Killpoint coverage: `cargo test --features failpoints --test crash_matrix`.
 
 ## Oracle caps
 
@@ -118,4 +134,4 @@ Journal states: `PREPARED` → `COMMITTING` → `COMPLETED` | `ROLLING_BACK` →
 
 ## Deferred
 
-`Move File` and `translate` — backlog. Default verify remains argv-only; `--verify-shell` is the explicit shell escape.
+`Move File` and `translate` — backlog.

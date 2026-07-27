@@ -46,7 +46,7 @@ When `*** Move to:` lands: write dest then remove source; rollback both; cover c
 
 ## Receipts and revert
 
-Successful mutation writes `.agent-patch/receipts/<txid>.json` referencing before-image objects (hashes-only receipts are invalid). `revert <RECEIPT>` proves current after-states, then runs a new journaled inverse transaction. `gc [--dry-run]` removes only unreferenced objects.
+Successful mutation writes `.agent-patch/receipts/<txid>.json` referencing before-image objects (hashes-only receipts are invalid). Receipts record `permissions.mode` / `executable` for update/delete; revert restores those bits. `revert <RECEIPT>` proves current after-states, then runs a new journaled inverse transaction. `gc [--dry-run]` removes only unreferenced objects.
 
 ## Failures
 
@@ -69,4 +69,4 @@ Successful mutation writes `.agent-patch/receipts/<txid>.json` referencing befor
 
 ## Fault injection
 
-Killpoint / failpoint coverage targets journal and rename transitions; incomplete journals block new writers until `recover`.
+Killpoints (`AGENT_PATCH_FAILPOINT` under `--features failpoints`): `after_prepared`, `before_visible_mutate`, `after_first_visible`, `before_completed`. Coverage: `cargo test --features failpoints --test crash_matrix`. Incomplete journals block new writers until `recover`. Dead-PID locks may be reclaimed without deleting journals.
