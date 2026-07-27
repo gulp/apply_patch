@@ -5,6 +5,7 @@ use crate::diagnostics::{
     emit_error_human, emit_error_json, emit_success_human, JsonFileResult, JsonSuccess, JsonSummary,
 };
 use crate::error::{ErrorCode, Limits, PublicError};
+use crate::events::{self, EventRecord};
 use crate::fs::{FileSystem, RealFileSystem};
 use crate::input::read_patch_bytes;
 use crate::path_policy::{check_path_collisions, CanonicalRoot};
@@ -26,6 +27,7 @@ pub struct AppConfig {
     pub plan: bool,
     pub verify: bool,
     pub verify_argv: Vec<String>,
+    pub verify_shell: Option<String>,
     pub shadow_mode: ShadowMode,
     pub shadow_include_caches: bool,
     pub match_opts: MatchOptions,
@@ -149,7 +151,7 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
     debug_log("plan", &format!("entries={}", plan.entries.len()));
 
     if config.verify {
-        if config.verify_argv.is_empty() {
+        if config.verify_shell.is_none() && config.verify_argv.is_empty() {
             return Err(PublicError::new(
                 ErrorCode::InputError,
                 "--verify requires a command after `--` (e.g. --verify -- true).",
@@ -162,16 +164,43 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
         };
         let shadow = materialize(&root.path, &plan, &shadow_opts)?;
         debug_log("shadow", &format!("files={}", shadow.report.files_copied));
-        let program = &config.verify_argv[0];
-        let args = &config.verify_argv[1..];
-        let verify_report = run_verify(
+        let (program, args_owned): (String, Vec<String>) = if let Some(script) = &config.verify_shell
+        {
+            (
+                "/bin/sh".into(),
+                vec!["-c".into(), script.clone()],
+            )
+        } else {
+            (
+                config.verify_argv[0].clone(),
+                config.verify_argv[1..].to_vec(),
+            )
+        };
+        let verify_report = match run_verify(
             &shadow,
-            program,
-            args,
+            &program,
+            &args_owned,
             &plan.plan_digest,
             &format!("{}", std::process::id()),
             &VerifyOptions::default(),
-        )?;
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                events::emit(
+                    &root.path,
+                    &EventRecord {
+                        version: 2,
+                        ts: events::now_ts(),
+                        phase: "verify",
+                        ok: false,
+                        transaction_id: None,
+                        plan_digest: Some(&plan.plan_digest),
+                        detail: Some(e.code.as_str()),
+                    },
+                );
+                return Err(e);
+            }
+        };
         // Promote: journaled commit to real root (lock acquired inside).
         let result = commit_plan(
             &fs as &dyn FileSystem,
@@ -180,6 +209,18 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
             config.receipt.as_deref(),
         )?;
         debug_log("commit", "ok");
+        events::emit(
+            &root.path,
+            &EventRecord {
+                version: 2,
+                ts: events::now_ts(),
+                phase: "verify",
+                ok: true,
+                transaction_id: Some(&result.transaction_id),
+                plan_digest: Some(&plan.plan_digest),
+                detail: None,
+            },
+        );
         return Ok(build_success(
             config,
             &root,
@@ -201,6 +242,18 @@ fn run_inner(config: &AppConfig, timers: &InvocationTimers) -> Result<JsonSucces
             config.receipt.as_deref(),
         )?;
         debug_log("commit", "ok");
+        events::emit(
+            &root.path,
+            &EventRecord {
+                version: 2,
+                ts: events::now_ts(),
+                phase: "apply",
+                ok: true,
+                transaction_id: Some(&result.transaction_id),
+                plan_digest: Some(&plan.plan_digest),
+                detail: None,
+            },
+        );
         Some(result.transaction_id)
     } else {
         None
@@ -316,6 +369,7 @@ fn assess_idempotent(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_success(
     config: &AppConfig,
     root: &CanonicalRoot,

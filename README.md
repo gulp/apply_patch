@@ -68,6 +68,7 @@ If `PATCH_FILE` is omitted, the patch is read from stdin. Modes `--check`, `--pl
 | `--check` | Validate and apply in memory; write nothing |
 | `--plan` | Emit immutable `ExecutionPlan` + diffs as JSON-friendly output; write nothing |
 | `--verify` | Materialize a shadow workspace, run argv after `--`, promote to the real root only on exit 0 |
+| `--verify-shell <SCRIPT>` | Explicit shell escape for verify (`/bin/sh -c`); prefer argv `--verify --` |
 | `--shadow-mode <tree\|touched>` | Shadow policy (`tree` default = representative under excludes; `touched` = planned paths only, non-representative) |
 | `--shadow-include-caches` | Include build/cache dirs in a tree shadow (still budgeted) |
 | `--fuzzy <off\|rstrip\|strip>` | Unique-only fuzzy ladder for locate (default `off`) |
@@ -89,6 +90,14 @@ Verify argv (only with `--verify`):
 scripts/agent-patch --verify -- cargo test -q < change.patch
 scripts/agent-patch --verify -- true < change.patch
 ```
+
+Shell escape (explicit; same promote rules):
+
+```bash
+scripts/agent-patch --verify-shell 'test -f src/lib.rs' < change.patch
+```
+
+Optional JSONL events: set `AGENT_PATCH_EVENT_LOG=1` (writes `.agent-patch/events/events.jsonl`) or a file path.
 
 ### Subcommands
 

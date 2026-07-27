@@ -36,6 +36,9 @@ pub struct ReceiptFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptPermissions {
     pub executable: bool,
+    /// Unix mode bits when captured (e.g. 0o644). Optional for older receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 pub fn build_receipt(
@@ -52,6 +55,7 @@ pub fn build_receipt(
                 Some(m.after_hash.hex()),
                 Some(ReceiptPermissions {
                     executable: m.before.permissions & 0o111 != 0,
+                    mode: Some(m.before.permissions),
                 }),
             ),
             PlannedChange::Remove(r) => (
@@ -59,6 +63,7 @@ pub fn build_receipt(
                 None,
                 Some(ReceiptPermissions {
                     executable: r.before.permissions & 0o111 != 0,
+                    mode: Some(r.before.permissions),
                 }),
             ),
         };
@@ -278,7 +283,10 @@ mod tests {
                 before_blake3: Some(hex.clone()),
                 after_blake3: Some("cc".into()),
                 before_object: Some(object_rel_path(&hex)),
-                permissions: Some(ReceiptPermissions { executable: false }),
+                permissions: Some(ReceiptPermissions {
+                    executable: false,
+                    mode: Some(0o644),
+                }),
             }],
         };
         write_internal(dir.path(), &receipt).unwrap();

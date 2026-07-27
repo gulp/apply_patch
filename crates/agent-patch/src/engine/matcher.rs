@@ -22,6 +22,7 @@ pub struct MatchHit {
 ///
 /// When context reduction is used, `ins_lines` are reduced by the same leading/trailing
 /// context strips so emit replaces exactly the matched span.
+#[allow(clippy::too_many_arguments)]
 pub fn find_unique_match(
     file_lines: &[&str],
     hunk: &Hunk,
@@ -228,6 +229,7 @@ fn match_at_eof(
     None
 }
 
+#[allow(clippy::type_complexity)]
 fn try_context_reduction_at_eof(
     file_lines: &[&str],
     hunk: &Hunk,

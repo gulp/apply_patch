@@ -78,34 +78,23 @@ pub fn doctor(root: &Path) -> Result<DoctorReport, PublicError> {
 
     // Fold status journal/lock checks
     let status_report: StatusReport = status(root)?;
-    checks.extend(status_report.checks);
 
-    // Leftover shadows
-    let shadows = root.join(".agent-patch/shadows");
-    if shadows.is_dir() {
-        let n = std::fs::read_dir(&shadows)
-            .map(|rd| rd.filter_map(|e| e.ok()).count())
-            .unwrap_or(0);
-        if n > 0 {
-            checks.push(StatusCheck {
-                name: "shadows".into(),
-                level: "warn".into(),
-                message: format!("{n} leftover shadow dir(s) under .agent-patch/shadows"),
-            });
+    let shadow_dir = crate::store_layout::agent_patch_dir(root).join("shadows");
+    let orphan_shadows = std::fs::read_dir(&shadow_dir)
+        .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    checks.push(StatusCheck {
+        name: "shadow_retention".into(),
+        level: if orphan_shadows == 0 { "ok".into() } else { "warn".into() },
+        message: if orphan_shadows == 0 {
+            "No leftover verify shadows.".into()
         } else {
-            checks.push(StatusCheck {
-                name: "shadows".into(),
-                level: "ok".into(),
-                message: "No leftover shadows.".into(),
-            });
-        }
-    } else {
-        checks.push(StatusCheck {
-            name: "shadows".into(),
-            level: "ok".into(),
-            message: "No shadow directory.".into(),
-        });
-    }
+            format!(
+                "{orphan_shadows} leftover verify shadow(s) under .agent-patch/shadows (removed on recover / next verify lifecycle)."
+            )
+        },
+    });
+    checks.extend(status_report.checks);
 
     let ok = checks.iter().all(|c| c.level != "error");
     Ok(DoctorReport {

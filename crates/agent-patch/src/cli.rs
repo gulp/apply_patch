@@ -29,6 +29,10 @@ pub struct Cli {
     #[arg(long)]
     pub verify: bool,
 
+    /// Explicit shell escape for verify (runs via `/bin/sh -c`; prefer `--verify --`)
+    #[arg(long, value_name = "SCRIPT")]
+    pub verify_shell: Option<String>,
+
     /// Shadow policy: tree (default, representative) or touched
     #[arg(long, default_value = "tree")]
     pub shadow_mode: String,
@@ -150,14 +154,15 @@ impl Cli {
                 "into_config called with subcommand; dispatch in main.",
             ));
         }
-        let modes = [self.check, self.plan, self.verify]
+        let verify_mode = self.verify || self.verify_shell.is_some();
+        let modes = [self.check, self.plan, verify_mode]
             .into_iter()
             .filter(|x| *x)
             .count();
         if modes > 1 {
             return Err(PublicError::new(
                 ErrorCode::InputError,
-                "--check, --plan, and --verify are mutually exclusive.",
+                "--check, --plan, and --verify/--verify-shell are mutually exclusive.",
             ));
         }
         if self.receipt.is_some() && (self.check || self.plan) {
@@ -166,13 +171,19 @@ impl Cli {
                 "--receipt requires a mutating apply.",
             ));
         }
-        if self.verify && self.verify_argv.is_empty() {
+        if self.verify_shell.is_some() && !self.verify_argv.is_empty() {
+            return Err(PublicError::new(
+                ErrorCode::InputError,
+                "--verify-shell cannot combine with argv after `--`; choose one verify form.",
+            ));
+        }
+        if self.verify && self.verify_shell.is_none() && self.verify_argv.is_empty() {
             return Err(PublicError::new(
                 ErrorCode::InputError,
                 "--verify requires a command after `--` (e.g. agent-patch --verify -- true).",
             ));
         }
-        if !self.verify && !self.verify_argv.is_empty() {
+        if !verify_mode && !self.verify_argv.is_empty() {
             return Err(PublicError::new(
                 ErrorCode::InputError,
                 "Trailing argv after `--` is only valid with --verify.",
@@ -188,8 +199,9 @@ impl Cli {
             patch_file: self.patch_file,
             check: self.check,
             plan: self.plan,
-            verify: self.verify,
+            verify: verify_mode,
             verify_argv: self.verify_argv,
+            verify_shell: self.verify_shell,
             shadow_mode,
             shadow_include_caches: self.shadow_include_caches,
             match_opts,

@@ -109,6 +109,7 @@ pub fn revert(root: &Path, receipt_path: &Path) -> Result<RevertResult, PublicEr
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn inverse_meta(
     root: &Path,
     f: &ReceiptFile,
@@ -246,15 +247,13 @@ fn apply_inverse(root: &Path, receipt: &ApplyReceipt) -> Result<(), PublicError>
                         PublicError::new(ErrorCode::ReceiptObjectMissing, "Missing before_object")
                     })?;
                 let bytes = get_object(root, hex)?;
-                let mode = if f
-                    .permissions
-                    .as_ref()
-                    .map(|p| p.executable)
-                    .unwrap_or(false)
-                {
-                    0o755
-                } else {
-                    0o644
+                let mode = match &f.permissions {
+                    Some(p) => match p.mode {
+                        Some(m) => m,
+                        None if p.executable => 0o755,
+                        None => 0o644,
+                    },
+                    None => 0o644,
                 };
                 write_bytes_atomic(&abs, &bytes, mode)?;
             }

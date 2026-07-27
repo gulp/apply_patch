@@ -22,6 +22,7 @@ fn stale_hunk_fails_without_mutation() {
         plan: false,
         verify: false,
         verify_argv: Vec::new(),
+        verify_shell: None,
         shadow_mode: agent_patch::shadow::ShadowMode::Tree,
         shadow_include_caches: false,
         match_opts: agent_patch::match_opts::MatchOptions::default(),

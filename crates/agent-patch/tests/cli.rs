@@ -155,7 +155,7 @@ fn plan_mode_zero_writes_and_digest() {
     assert_eq!(v["version"], 2);
     assert!(v["plan_digest"].as_str().unwrap().starts_with("blake3:"));
     assert_eq!(v["plan"]["version"], 2);
-    assert!(v["plan"]["entries"].as_array().unwrap().len() >= 1);
+    assert!(!v["plan"]["entries"].as_array().unwrap().is_empty());
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "hello\n"
@@ -478,6 +478,90 @@ fn idempotent_replay_succeeds() {
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "world\n"
+    );
+}
+
+#[test]
+fn verify_shell_promotes_on_success() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+    let patch = r#"*** Begin Patch
+*** Update File: a.txt
+@@
+-hello
++world
+*** End Patch
+"#;
+    bin()
+        .current_dir(dir.path())
+        .args(["--verify-shell", "test -f a.txt"])
+        .write_stdin(patch)
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "world\n"
+    );
+}
+
+#[test]
+fn event_log_records_apply() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+    let log = dir.path().join("events.jsonl");
+    let patch = r#"*** Begin Patch
+*** Update File: a.txt
+@@
+-hello
++world
+*** End Patch
+"#;
+    bin()
+        .current_dir(dir.path())
+        .env("AGENT_PATCH_EVENT_LOG", &log)
+        .args(["--json"])
+        .write_stdin(patch)
+        .assert()
+        .success();
+    let body = fs::read_to_string(&log).unwrap();
+    assert!(body.contains("\"phase\":\"apply\""));
+    assert!(body.contains("\"ok\":true"));
+}
+
+#[cfg(unix)]
+#[test]
+fn revert_restores_mode_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("script.sh");
+    fs::write(&path, "#!/bin/sh\necho hi\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+    let receipt = dir.path().join("r.json");
+    let patch = r#"*** Begin Patch
+*** Update File: script.sh
+@@
+-#!/bin/sh
+-echo hi
++#!/bin/sh
++echo hello
+*** End Patch
+"#;
+    bin()
+        .current_dir(dir.path())
+        .args(["--receipt", receipt.to_str().unwrap()])
+        .write_stdin(patch)
+        .assert()
+        .success();
+    bin()
+        .current_dir(dir.path())
+        .args(["revert", receipt.to_str().unwrap()])
+        .assert()
+        .success();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o750);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "#!/bin/sh\necho hi\n"
     );
 }
 

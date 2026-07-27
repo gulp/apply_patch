@@ -503,8 +503,10 @@ mod tests {
         let root = dir.path();
         fs::write(root.join("other.txt"), "x\n").unwrap();
         let plan = tiny_plan(root, "only.txt", b"y\n");
-        let mut opts = ShadowOptions::default();
-        opts.mode = ShadowMode::Touched;
+        let opts = ShadowOptions {
+            mode: ShadowMode::Touched,
+            ..ShadowOptions::default()
+        };
         let shadow = materialize(root, &plan, &opts).unwrap();
         assert!(!shadow.report.representative);
         assert!(shadow.shadow_root.join("only.txt").is_file());
@@ -519,8 +521,10 @@ mod tests {
             fs::write(root.join(format!("f{i}.txt")), b"x").unwrap();
         }
         let plan = tiny_plan(root, "z.txt", b"z\n");
-        let mut opts = ShadowOptions::default();
-        opts.max_files = 2;
+        let opts = ShadowOptions {
+            max_files: 2,
+            ..ShadowOptions::default()
+        };
         let err = materialize(root, &plan, &opts).unwrap_err();
         assert_eq!(err.code, ErrorCode::ShadowLimitExceeded);
     }

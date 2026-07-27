@@ -118,4 +118,4 @@ Journal states: `PREPARED` → `COMMITTING` → `COMPLETED` | `ROLLING_BACK` →
 
 ## Deferred
 
-`Move File`, `translate`, and `--verify-shell` (explicit shell escape for verify) — backlog. Default verify remains argv-only.
+`Move File` and `translate` — backlog. Default verify remains argv-only; `--verify-shell` is the explicit shell escape.
