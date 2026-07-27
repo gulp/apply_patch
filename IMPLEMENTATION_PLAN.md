@@ -7,7 +7,7 @@ Primary users: Coding agents operating through shell-capable harnesses
 Primary interface: Repo-local command-line executable (`scripts/agent-patch`; optional PATH via direnv / `cargo install`)
 Implementation language: Rust
 Initial platforms: Linux and macOS
-Primary objective: Keep fail-closed V4A apply, and make agent recovery, verification, and multi-agent safety first-class
+Primary objective: Keep fail-closed V4A apply while making verification representative, commits crash-recoverable, reverts self-contained, and multi-agent races explicit
 
 ---
 
@@ -18,36 +18,41 @@ Primary objective: Keep fail-closed V4A apply, and make agent recovery, verifica
 1. Preserve the v1 contract: unique-exact locate→emit, transactional commit, root confinement, stable exits/JSON, no silent fuzzy default.
 
 2. Make every apply failure **actionable for an agent** without human intervention:
-   - candidate locations and excerpts;
+   - candidate locations and excerpts derived from locator evidence;
    - draft repair patches where safe;
    - explicit next-action hints tied to `ErrorCode`.
 
-3. Support **verify-gated commit**: apply to a shadow tree, run a user command, promote only on success.
+3. Support **verify-gated commit**: materialize a representative shadow workspace, run a bounded user command, promote only on success and unchanged bases.
 
-4. Emit **apply receipts** and support transactional **revert** from a receipt.
+4. Emit **self-contained apply receipts** (content-addressed before-images) and support transactional **revert** without Git.
 
-5. Support optional **content-hash pins** on patch targets so parallel agents fail closed on stale bases before hunk matching.
+5. Make every mutating operation **crash-recoverable** via a durable journal and `recover`.
 
-6. Support **idempotent / already-applied** detection as an explicit success mode (not silent no-op confusion with `PATCH_NO_EFFECT`).
+6. Support optional **content-hash pins** on patch targets so parallel agents fail closed on stale bases before hunk matching.
 
-7. Offer **unique-only** opt-in fuzz (`rstrip` / `strip`) that never selects first-match-wins.
+7. Support **idempotent / already-applied** detection as an explicit success mode that proves the full intended after-state (not silent no-op confusion with `PATCH_NO_EFFECT`).
 
-8. Detect **wrong-match risk** (thin context / near-miss twins) and refuse or warn before commit.
+8. Offer **unique-only** opt-in fuzz (`rstrip` / `strip`) that never selects first-match-wins.
 
-9. Provide structured **`--plan`** output (locate results + diffs) without writing the tree.
+9. Detect **wrong-match risk** from structured `MatchEvidence` and refuse or warn before commit.
 
-10. Ship **`doctor`** for PATH, direnv, and release-binary freshness footguns.
+10. Provide structured **`--plan`** output (immutable `ExecutionPlan` + diffs) without writing the tree.
 
-11. Keep invocation agent-friendly:
+11. Bound matcher work, shadow disk/time, verifier runtime/descendants/output, diagnostics, and recovery artifacts (exit 7 on limit failures whenever possible before mutation).
+
+12. Ship **`doctor`** / **`status`** for PATH, direnv, release-binary freshness, lock/journal health, and artifact cleanup guidance.
+
+13. Keep invocation agent-friendly:
     - `scripts/agent-patch` canonical;
     - bare `agent-patch` when `scripts/` is on `PATH`;
-    - no MCP requirement.
+    - no MCP requirement;
+    - no remote telemetry requirement.
 
-12. Extend the dialect only via explicit contract bumps (`docs/contract-v1.md` or a successor).
+14. Extend the dialect only via explicit contract bumps (`docs/contract-v1.md` or a successor).
 
-13. Keep Move File out of default path until [docs/design/move.md](docs/design/move.md) is implemented under a contract bump.
+15. Keep Move File and `translate` out of this plan’s critical path (backlog only; Move design remains [docs/design/move.md](docs/design/move.md)).
 
-14. Keep dogfood fixtures and Codex scenario subsets green on Linux and macOS CI.
+16. Keep dogfood fixtures and Codex scenario subsets green on Linux and macOS CI.
 
 ### 1.2 Non-goals
 
@@ -71,6 +76,12 @@ Primary objective: Keep fail-closed V4A apply, and make agent recovery, verifica
 
 10. Not default `--fuzzy`; uniqueness remains mandatory at every fuzz level.
 
+11. Not a remote telemetry agent, daemon, or bundled alerting service.
+
+12. Not a sandbox for untrusted verifier commands; verification runs with the invoking user’s privileges.
+
+13. Not Move or `translate` until recovery, self-contained receipts, and representative verification meet Definition of Done.
+
 ---
 
 ## 2. Product Definition
@@ -79,7 +90,7 @@ Primary objective: Keep fail-closed V4A apply, and make agent recovery, verifica
 
 `agent-patch`
 
-A repo-local Rust CLI that applies structured, localized, transactional V4A-family patches for coding agents—with verification, recoverable failures, and multi-agent freshness controls.
+A repo-local Rust CLI that applies structured, localized, transactional V4A-family patches for coding agents—with verification, recoverable failures, crash-safe commits, and multi-agent freshness controls.
 
 ### 2.2 Users
 
@@ -104,7 +115,10 @@ v1 solves whole-file rewrite risk with fail-closed unique-exact apply. Agents st
 - “unique” matches the wrong near-duplicate;
 - apply succeeds but breaks the build;
 - retries re-apply and confuse `PATCH_NO_EFFECT` with success;
-- parallel agents race without content pins;
+- parallel agents race without content pins or writer serialization;
+- mid-commit crashes leave an ambiguous tree with only in-process rollback;
+- receipts that store hashes alone cannot reconstruct deleted or overwritten bytes;
+- touched-path-only verify shadows create false verification claims;
 - stale `target/release` binaries silently run old code.
 
 This plan addresses those gaps without abandoning fail-closed semantics.
@@ -113,9 +127,11 @@ This plan addresses those gaps without abandoning fail-closed semantics.
 
 - Contract-first: bump docs before behavior.
 - Pure engine: locate/emit stay FS-free.
-- Commit stays all-or-nothing with rollback.
+- One immutable `ExecutionPlan` drives verify, commit, receipt, revert, and recovery—no commit-time rematching.
+- Commit guarantee is durable recoverability to proven all-before or all-after (not multi-file atomic visibility).
 - JSON remains versioned and machine-pure.
-- Complexity budget: prefer features that reuse `locate_chunks`, `emit_chunks`, `commit_plan`, and `PublicError`.
+- Complexity budget: prefer features that reuse `locate_chunks`, `emit_chunks`, path policy, and `PublicError`; do not invent a second matching algorithm for diagnostics.
+- Local-only operational evidence (`status` / `doctor` / optional event log)—no network telemetry.
 
 ### 2.5 Environment
 
@@ -123,6 +139,7 @@ This plan addresses those gaps without abandoning fail-closed semantics.
 - Rust stable workspace under `crates/agent-patch`.
 - Invocation: `scripts/agent-patch` (release → debug → `cargo run`); optional `PATH_add scripts` via `.envrc`.
 - Dogfood tree: `fixtures/dogfood` (never required for production use).
+- On-disk tool state under `.agent-patch/` (objects, transactions, lock, optional events)—never part of the patch dialect.
 
 ---
 
@@ -153,15 +170,23 @@ Planned (contract bump required where noted):
 
 | Flag / subcommand | Role | Contract |
 | --- | --- | --- |
-| `--plan` | Locate→emit preview + structured diffs; no writes | Additive CLI |
-| `--verify <CMD>` | Shadow apply; run command; promote on exit 0 | Additive; document shadow semantics |
-| `--receipt <PATH>` | Write apply receipt after success | Additive |
+| `--plan` | Freeze and emit the immutable execution plan + structured diffs; no writes | Additive CLI |
+| `--verify -- <PROGRAM> [ARG ...]` | Representative shadow, overlay plan, run bounded argv command, promote on exit 0 | Additive; shadow contract |
+| `--verify-shell <SCRIPT>` | Explicit shell escape hatch | Additive; security warning |
+| `--verify-timeout <DURATION>` | Wall-clock deadline including descendant termination | Additive |
+| `--verify-output-limit <BYTES>` | Per-stream capture cap; artifact retained | Additive |
+| `--shadow-mode <tree\|touched>` | `tree` default (representative); `touched` labeled non-representative | Additive policy |
+| `--receipt <PATH>` | Copy/export durable receipt after success (internal receipt always written) | Additive |
 | `--revert <RECEIPT>` | Transactional undo from receipt | Additive |
+| `recover [--transaction <ID>]` | Resolve crash-interrupted transaction journal | Additive |
+| `status` | Report lock/journal/object-store health without mutation | Additive |
+| `gc [--dry-run]` | Reference-safe object/artifact cleanup | Additive |
 | `--fuzzy <off\|rstrip\|strip>` | Unique-only fuzz ladder; default `off` | Contract bump for matching |
-| `--risk <off\|warn\|refuse>` | Thin-context / near-miss gate | Additive policy |
-| `--idempotent` | Treat already-applied as success | Contract bump for success modes |
-| `doctor` | Env / PATH / binary freshness | Additive |
-| `translate` | V4A ↔ unified (optional phase) | Additive; not apply path |
+| `--risk <off\|warn\|refuse>` | Deterministic gate over `MatchEvidence` | Additive policy |
+| `--idempotent` | Prove full intended after-state; reject incompatible partial replay | Contract bump for success modes |
+| `doctor` | Env, binary freshness, transaction health, cleanup guidance | Additive |
+
+`Move File` and `translate` are backlog-only and are not part of this plan’s implementation phases.
 
 ### 3.3 Protocol (baseline)
 
@@ -179,7 +204,7 @@ Planned protocol extensions (explicit bump):
 *** Hash: blake3 <hex>     # optional per-file pin before hunks / after Update header
 ```
 
-Exact grammar to freeze in Phase 0 of this plan.
+Exact grammar frozen in Phase 0 (§20).
 
 ### 3.4 Matching contract (baseline + deltas)
 
@@ -188,15 +213,16 @@ Baseline: [docs/contract-v1.md](docs/contract-v1.md).
 Deltas under bump:
 
 1. `--fuzzy=rstrip|strip`: normalize for search only; accept only if **exactly one** match.
-2. Risk gate: if accepted match has near-miss siblings under reduced context, `warn` or `refuse`.
-3. Idempotent: if old-side absent and new-side present at expected locus, success with `already_applied`.
+2. Locator emits `MatchEvidence` (levels tried, retained context, candidate counts, anchor/EOF, nearby twins). Risk policy is a pure function over that evidence; similarity never selects a target.
+3. `--idempotent`: succeed only when every operation is newly applicable or provably already applied **and** the combined final tree equals the plan’s intended after-state. Incompatible partial replay → `PARTIALLY_APPLIED` (exit 1).
 
 ### 3.5 Stdout / stderr
 
 Unchanged philosophy:
 
 - human mode: summary stdout, diagnostics stderr;
-- `--json`: one object stdout; stderr empty for structured failures.
+- `--json`: one object stdout; stderr empty for structured failures;
+- verifier captured output never contaminates `--json` stdout (artifacts + bounded tails only).
 
 ### 3.6 Exit taxonomy
 
@@ -205,13 +231,13 @@ Keep exits 0–7. Planned additive meanings stay within classes:
 | Code | Class | Notes |
 | --- | --- | --- |
 | 0 | success | includes idempotent already-applied when enabled |
-| 1 | does not apply | hunk / risk-refuse / verify-cmd failed after clean shadow discard |
-| 2 | malformed / unsupported | |
+| 1 | does not apply | hunk / risk-refuse / partially-applied / verify failed|timeout|signalled after clean shadow discard |
+| 2 | malformed / unsupported | including invalid receipt schema |
 | 3 | I/O | |
 | 4 | path policy | |
-| 5 | concurrent / hash pin mismatch | |
-| 6 | internal / rollback / revert failed | |
-| 7 | limits | |
+| 5 | concurrent / lock / hash pin mismatch | |
+| 6 | internal / rollback / recovery required / ambiguous recovery | |
+| 7 | limits | match work, shadow, verify output, artifact budgets |
 
 ---
 
@@ -220,63 +246,156 @@ Keep exits 0–7. Planned additive meanings stay within classes:
 ### 4.1 Layered architecture
 
 ```text
-CLI (clap)
-  → app::run
-       ├─ doctor | translate | revert   (optional entrypoints)
-       ├─ parse_patch (+ optional hash pins)
-       ├─ path policy + snapshot
-       ├─ validate + plan
-       ├─ risk / fuzzy / idempotent (pure)
-       ├─ apply_update (locate_chunks → emit_chunks)
-       ├─ --check / --plan → emit and stop
-       ├─ --verify → shadow FS → command → promote or discard
-       └─ commit_plan → receipt
+CLI / output adapters
+  → Application command dispatcher
+      → Parse + policy validation
+      → Snapshot loader
+      → Pure planner
+          → locate / emit / risk / idempotence
+          → immutable ExecutionPlan + plan_digest
+      → read-only exits: check / plan
+      → verification coordinator
+          → representative WorkspaceSnapshot
+          → overlay ExecutionPlan
+          → bounded VerifyRunner
+      → mutation coordinator
+          → root lock
+          → final revalidation
+          → object store + durable journal
+          → commit state machine
+          → receipt finalization
+      → recovery / revert / gc services
+  → human / JSON / optional JSONL-event renderers
 ```
 
-### 4.2 Components
+### 4.2 Core domain objects
 
-#### 4.2.1 CLI adapter
+```rust
+struct ExecutionPlan {
+    version: u32,
+    root_identity: RootIdentity,
+    entries: Vec<PlannedEntry>,
+    match_evidence: Vec<MatchEvidence>,
+    limits_used: LimitUsage,
+    digest: PlanDigest,
+}
 
-Parse flags/subcommands; enforce mutually exclusive modes (`--check` vs `--verify` vs `--revert`).
+struct PlannedEntry {
+    path: RepoPath,
+    operation: OperationKind,
+    before: FileIdentity,
+    after: FileIdentity,
+    after_content: PlannedContent,
+    permissions: PermissionPlan,
+}
 
-#### 4.2.2 Protocol parser
+struct TransactionJournal {
+    transaction_id: TransactionId,
+    plan_digest: PlanDigest,
+    state: JournalState,
+    entries: Vec<JournalEntry>,
+    created_at: Timestamp,
+}
+```
 
-Existing AST + EOF + anchors. Extend for optional hash pins.
+Canonical plan encoding is specified byte-for-byte. Maps are forbidden in digest-bearing structures unless key ordering is canonical. Paths are sorted by normalized repository-relative bytes.
 
-#### 4.2.3 Path policy / snapshot / validate / plan
+### 4.3 Components
 
-Unchanged seams; snapshot gains fields needed for idempotent detection and risk.
+#### 4.3.1 CLI and application dispatcher
 
-#### 4.2.4 Engine
+Parses modes and delegates to typed commands. It does not parse patch syntax, match hunks, or mutate files. Conflicts are rejected by a frozen flag matrix. Verify argv begins after `--`; no implicit shell parsing occurs.
 
-`matcher` / `locate` / `emit` / `apply` / `diff_summary`. Fuzzy and risk are locate-time policies.
+#### 4.3.2 Protocol parser
 
-#### 4.2.5 Shadow filesystem
+Produces a source-spanned AST and optional BLAKE3 pins. Filesystem-free; bounded by input limits.
 
-New adapter implementing the same `FileSystem` trait over a temp root mirroring relative paths.
+#### 4.3.3 Path policy and snapshot loader
 
-#### 4.2.6 Verify runner
+Centralizes root confinement, path alias detection, symlink policy, special-file rejection, byte loading, metadata capture, and exact content identity. Every later layer receives `RepoPath`, never untrusted `PathBuf`.
 
-Spawn user command with `cwd=shadow` or `cwd=real` + env pointing at shadow—**Phase 0 decision**. Default recommendation: `cwd` = shadow root so tools see the candidate tree.
+#### 4.3.4 Pure planner
 
-#### 4.2.7 Receipt store
+Owns validation, matching, emission, risk evaluation, and idempotence proofs. Returns one immutable `ExecutionPlan`; no downstream phase rematches or reconstructs intended bytes.
 
-Serialize plan + before/after hashes + inverse ops; load for revert.
+#### 4.3.5 Match evidence and risk policy
 
-#### 4.2.8 Diagnostics
+Locator records every attempted exact / context-reduced / fuzzy search and its candidate count. Diagnostics and risk consume this evidence. Repair patches may be rendered from evidence but are never executable state.
 
-Extend JSON error objects with `candidates`, `excerpts`, optional `repair_patch`.
+#### 4.3.6 Workspace snapshotter
 
-#### 4.2.9 Doctor
+Creates an isolated candidate workspace from the current root, then overlays the plan:
 
-Read mtimes of `src/**` vs `target/release/agent-patch`; check `command -v agent-patch`; print remediation.
+- includes tracked, dirty, and untracked files under policy;
+- preserves bytes, executable bits, safe in-root symlinks, and directory shape;
+- uses reflink/clonefile when available and verified not to mutate the source;
+- falls back to byte copy;
+- never uses hard links;
+- always excludes `.agent-patch/` internals (recreated minimally in the shadow);
+- by default also excludes VCS metadata and common build/cache trees (`.git/`, `target/`, `node_modules/`, `.venv/`, `__pycache__/`, and equivalents) so verify remains usable on large checkouts—JSON reports `shadow.excludes` and still sets `verify.representative=true` when the retained tree plus plan is a coherent source workspace for typical build/test commands;
+- `--shadow-include-caches` (or empty exclude list) opts into near-byte-complete trees when budgets allow;
+- records a manifest and total files/bytes;
+- fails before verify if shadow budgets are exceeded.
 
-### 4.3 Boundary rules
+`--shadow-mode=touched` materializes only planned paths, sets `verify.representative=false`, and is never the default.
 
-- Engine never runs verify commands.
-- Commit never fuzzy-matches.
-- Repair patches are suggestions only; never auto-applied.
-- Shadow trees are deleted on success promote and on failure (optional `--keep-shadow` later).
+#### 4.3.7 Verify runner
+
+Runs argv directly with `cwd` equal to the shadow root. Creates a process group, streams bounded output to artifact files, enforces timeout, graceful then hard kill, waits for descendants, and records exit/signal/duration/truncation. Environment additions:
+
+```text
+AGENT_PATCH_MODE=verify
+AGENT_PATCH_REAL_ROOT=<absolute root>
+AGENT_PATCH_SHADOW_ROOT=<absolute shadow>
+AGENT_PATCH_PLAN_DIGEST=<hex>
+AGENT_PATCH_INVOCATION_ID=<id>
+```
+
+#### 4.3.8 Root lock
+
+Mutating apply / revert / recover acquire an exclusive lock at `.agent-patch/lock`. Acquisition has a bounded timeout and reports owner metadata when available. Stale-lock heuristics never delete transaction journals. `--check` / `--plan` remain lock-free. `--verify` locks only for final promotion after a successful verifier, then revalidates every affected path. The lock is defense in depth—never a replacement for byte-identity checks.
+
+#### 4.3.9 Content-addressed object store
+
+Stores exact before-images under `.agent-patch/objects/<blake3>`. Objects are immutable, exclusively created, hash-verified after write, and directory-fsynced. Written before visible mutation. Adds need no before-image; updates and deletes do. GC is explicit, reference-safe, dry-run capable, and never removes objects referenced by receipts or incomplete journals.
+
+#### 4.3.10 Transaction coordinator
+
+Consumes only an `ExecutionPlan`. Acquires the lock, rejects unresolved journals, revalidates bases, prepares temps and before-image objects, writes the journal, advances the commit state machine, verifies postconditions, finalizes the receipt, and marks the journal complete.
+
+#### 4.3.11 Recovery service
+
+Reads durable journal state without trusting filenames alone. Verifies hashes of journals, objects, temps, and current paths. Policy:
+
+1. mark complete when every after-state already matches;
+2. otherwise restore every before-state from objects;
+3. never invent a mixed roll-forward;
+4. retain evidence and exit 6 if neither complete nor rollback can be proven.
+
+#### 4.3.12 Receipt and revert service
+
+Receipts reference immutable before-image objects and include root identity, transaction ID, plan digest, after identities, permissions, and tool contract version. Revert proves current paths equal receipt after-states, then creates a new ordinary journaled transaction restoring before-states. Revert is itself receipted and recoverable.
+
+#### 4.3.13 Diagnostics and observability
+
+Public errors, success JSON, `status`, and `doctor` render from typed records. Optional JSONL event log (`AGENT_PATCH_EVENT_LOG=1` or `--event-log`) is an adapter—never required for correctness. Source excerpts, verifier tails, and repair patches have independent byte caps.
+
+#### 4.3.14 Doctor
+
+Checks selected binary freshness vs sources, PATH/direnv resolution, lock/journal health, corrupt/missing objects, leftover shadows, and unsupported durability capabilities.
+
+### 4.4 Boundary rules
+
+1. Parser, matcher, emitter, risk policy, and planner are pure.
+2. Only the workspace snapshotter may create verification trees.
+3. Only the verify runner may spawn commands.
+4. Only the transaction coordinator and recovery service may mutate the real root or `.agent-patch/transactions`.
+5. Commit never rematches hunks or changes the plan.
+6. Receipts are finalized only after postcondition verification.
+7. Repair patches are diagnostic strings, never auto-applied.
+8. Hard links are forbidden in shadows and rollback storage.
+9. A mutating command refuses to proceed while recovery is required.
+10. Optional output adapters cannot alter exit codes or transaction behavior.
 
 ---
 
@@ -286,11 +405,11 @@ Carry forward v1 invariants I1–I18 (root confinement, transactionality, no mut
 
 ### I19 — Verify before promote
 
-`--verify` never mutates the real root unless the verify command exits 0 and revalidation still passes.
+`--verify` never mutates the real root unless the verify command exits 0 and revalidation still passes. Verify failure/timeout/signal discards the shadow and leaves the root unchanged.
 
 ### I20 — Receipt fidelity
 
-Revert applies the inverse of a successful receipt or fails closed with no partial undo.
+Revert restores exact before bytes and modes from durable objects referenced by a successful receipt, or fails closed with no partial undo.
 
 ### I21 — Fuzzy uniqueness
 
@@ -298,7 +417,7 @@ Any fuzz level still requires exactly one match; zero or many → existing hunk 
 
 ### I22 — Oracle honesty
 
-Candidate lists and repair patches must be derived from the same locator used for apply; no second guessed algorithm.
+Candidate lists and repair patches must be derived from the same locator evidence used for apply; no second guessed algorithm.
 
 ### I23 — Hash pin precedence
 
@@ -308,73 +427,152 @@ When a pin is present, pin failure precedes hunk matching.
 
 `--check`, `--plan`, `--verify`, apply, and `--revert` do not silently combine conflicting write behaviors.
 
+### I25 — One immutable plan
+
+Every apply phase consumes the same digest-bearing `ExecutionPlan`; no commit-time rematching or intent reconstruction.
+
+### I26 — Durable recoverability before visibility
+
+Before the first visible root mutation, all required before-images and the transaction journal are durable and hash-verified.
+
+### I27 — Single root writer
+
+At most one apply, revert, or recover transaction owns the root mutation lock.
+
+### I28 — Representative verify by default
+
+Default `--verify` observes an isolated workspace that includes dirty/untracked source files and untouched dependencies needed for typical repository commands, subject to documented cache excludes (§4.3.6). Weaker modes (`touched`, or explicit exclude overrides that omit required sources) are machine-labeled `representative=false`.
+
+### I29 — Bounded subprocess lifecycle
+
+Verify commands have bounded wall time, output, termination grace, and descendant lifetime.
+
+### I30 — Self-contained revert
+
+A receipt references durable content sufficient to restore exact before-states without Git, network, or mutable external caches.
+
+### I31 — No unresolved-journal bypass
+
+Normal mutation cannot proceed while an incomplete transaction journal exists.
+
+### I32 — Idempotence proves final state
+
+Idempotent success means the complete intended after-state is proven; incompatible partial application is not success.
+
 ---
 
 ## 6. Data Flow
 
-### 6.1 Normal apply
+### 6.1 Plan / check
 
 ```text
-input → limits → parse → path → snapshot → validate
-  → (hash pins) → locate/emit → risk → plan
-  → revalidate → commit → receipt? → emit success
+input → bounded read → parse → path policy → snapshot
+  → pins → locate/emit → MatchEvidence → risk/idempotence
+  → freeze ExecutionPlan + digest → render → stop
 ```
 
-### 6.2 Check / plan
+No lock, temp file, shadow, object, journal, or real-root write is permitted.
 
-Same through in-memory apply; no temps; `--plan` adds structured hunk/diff payload.
-
-### 6.3 Verify
+### 6.2 Direct apply
 
 ```text
-… → in-memory plan → materialize shadow → run CMD
-  → fail: discard shadow, exit 1 (verify failed)
-  → ok: revalidate real root → commit → receipt? → cleanup shadow
+freeze ExecutionPlan
+  → acquire root lock
+  → reject unresolved journal
+  → revalidate every base identity
+  → persist before-image objects
+  → prepare same-directory temps
+  → write+fsync journal(PREPARED)
+  → commit entries, journaling progress
+  → verify every after identity
+  → write+fsync receipt
+  → journal(COMPLETED)
+  → cleanup temps → release lock → emit success
 ```
+
+### 6.3 Verify-gated apply
+
+```text
+freeze ExecutionPlan
+  → snapshot representative workspace
+  → overlay exact planned after-state
+  → run bounded verifier
+  → nonzero/timeout/signal: retain bounded artifacts, discard shadow, no root lock/write
+  → success: acquire lock → reject unresolved journal → revalidate bases
+  → execute the same direct-apply transaction protocol
+```
+
+The verifier result is tied to `plan_digest`. Root drift before promotion → `CONCURRENT_MODIFICATION`; verification is not silently rerun.
 
 ### 6.4 Revert
 
 ```text
-load receipt → verify current hashes match receipt.after
-  → build inverse plan → commit → emit
+load+validate receipt → resolve+verify object hashes
+  → prove current paths equal receipt after-states
+  → build inverse ExecutionPlan
+  → ordinary journaled transaction → new revert receipt
 ```
 
-### 6.5 Failure
+### 6.5 Recover
 
-No real-root mutation on validation/locate/risk/verify failure. Rollback on mid-commit failure (existing).
+```text
+acquire root lock → load incomplete journal → verify durable artifacts/current paths
+  → all after-states match: finalize/mark complete
+  → otherwise: restore all before-states from objects
+  → verify restored identities → mark rolled_back
+  → ambiguity or missing artifacts: retain journal, exit 6, emit exact next-action evidence
+```
+
+### 6.6 Failure
+
+No real-root mutation on validation / locate / risk / verify failure. Mid-commit failure uses in-process rollback when possible; otherwise leaves a recoverable journal. Every failure states whether the root changed, whether rollback completed, whether recovery is required, and the exact next action.
 
 ---
 
 ## 7. Data Model and Schemas
 
-### 7.1 Success JSON (extensions)
+### 7.1 Success JSON
 
-Additive fields (version stays `1` or bump to `2` if breaking—**Phase 0**):
+Public CLI JSON bumps to version `2` when `ExecutionPlan` / transaction fields ship (consumers must opt in). Shape:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "ok": true,
-  "mode": "apply|check|plan|verify|revert",
+  "invocation_id": "01J...",
+  "mode": "apply|check|plan|verify|revert|recover|status|doctor",
+  "plan_digest": "blake3:...",
   "already_applied": false,
   "summary": {},
   "files": [],
   "plan": null,
   "receipt_path": null,
-  "verify": { "command": "...", "exit_code": 0, "duration_ms": 0 }
+  "transaction_id": null,
+  "verify": {
+    "argv": ["cargo", "check", "-q"],
+    "exit_code": 0,
+    "duration_ms": 0,
+    "representative": true,
+    "shadow_mode": "tree",
+    "excludes": [".git/", "target/"],
+    "artifact_dir": null
+  }
 }
 ```
 
-### 7.2 Error JSON (extensions)
+### 7.2 Error JSON
 
 ```json
 {
   "ok": false,
+  "invocation_id": "01J...",
   "error": {
     "code": "HUNK_AMBIGUOUS",
     "exit_code": 1,
     "message": "...",
     "path": "...",
+    "root_changed": false,
+    "recovery_required": false,
     "candidates": [{ "start_line": 10, "end_line": 12, "excerpt": "..." }],
     "repair_patch": "*** Begin Patch\n...",
     "hint": "..."
@@ -382,56 +580,92 @@ Additive fields (version stays `1` or bump to `2` if breaking—**Phase 0**):
 }
 ```
 
-### 7.3 Receipt schema
+### 7.3 Execution plan schema
+
+`--plan` emits the digest-bearing plan: normalized paths, operation order, before/after identities, newline metadata, match evidence summaries, risk decisions, and structured diffs (`similar` observational only). Encoding rules for the digest live in the schema freeze (Phase 0).
+
+### 7.4 Receipt schema
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "root": "...",
   "created_at": "...",
+  "transaction_id": "...",
+  "plan_digest": "blake3:...",
+  "tool_contract_version": 2,
   "files": [
     {
       "path": "src/a.rs",
       "operation": "update|add|delete",
       "before_blake3": "...",
       "after_blake3": "...",
-      "before_bytes_b64": null,
-      "after_bytes_b64": null
+      "before_object": "objects/<blake3>",
+      "permissions": { "executable": false }
     }
   ]
 }
 ```
 
-Phase 0 decides whether receipts embed full before bytes (size-bounded) or re-read strategy for revert.
+Internal receipts always live under `.agent-patch/receipts/`. `--receipt <PATH>` exports a copy. Before bytes live in the object store—not inline base64—except optional small diagnostic embeds under a hard cap.
 
-### 7.4 Fingerprints / newlines
+### 7.5 Journal schema and states
 
-Unchanged: BLAKE3 labeled; LF/CRLF file-wins; mixed rejected on update.
+Journal states (minimum): `PREPARED` → `COMMITTING` → `COMPLETED` | `ROLLING_BACK` → `ROLLED_BACK`. Progress records per-entry completion. Incomplete journals block new mutation until `recover` resolves them.
+
+### 7.6 Object schema
+
+Objects are exact byte blobs addressed by BLAKE3. Restore metadata lives in receipt/journal entries, not in filesystem mtimes. Write protocol: exclusive create → full write → file sync → hash reread → atomic publish → directory sync.
+
+### 7.7 Fingerprints and newlines
+
+BLAKE3 over exact bytes is authoritative. Existence, kind, size, and executable mode are recorded for diagnostics and race defense. LF/CRLF file-wins; mixed line endings remain rejected on update; BOM preserve unchanged.
 
 ---
 
 ## 8. Filesystem Transaction Strategy
 
-### 8.1 Real-root commit
+### 8.1 Filesystem support contract
 
-Unchanged: revalidate → temps → rename → rollback ([docs/design/transaction.md](docs/design/transaction.md)).
+Supported roots must provide same-directory atomic rename for regular files. Unsupported special files and cross-device temp placement are rejected. Multi-file atomic visibility is not claimed. The guarantee is durable recoverability to a proven all-before or all-after state. See also [docs/design/transaction.md](docs/design/transaction.md) (updated in Phase 0/3 to journal + objects).
 
-### 8.2 Shadow materialization
+### 8.2 Preparation
 
-- Create exclusive temp directory.
-- Write full planned file set (add/update) and record deletes as absences in shadow view.
-- Tools that expect a full checkout may need copy-on-write of unread files—**Phase 0**:  
-  - **A (simpler):** shadow contains only touched paths (verify cmds must be path-local);  
-  - **B (heavier):** overlay or worktree clone.  
-  Recommendation: start with **A** + document constraints; offer worktree mode later.
+Under the root lock and after final revalidation:
 
-### 8.3 Promote
+1. create transaction directory exclusively;
+2. store and verify before-image objects for updates/deletes;
+3. create same-directory temp files for adds/updates;
+4. write proposed bytes, set permissions, sync files;
+5. record all temp paths and identities;
+6. write and fsync `PREPARED` journal;
+7. fsync every relevant parent directory before visible mutation.
 
-After verify 0: run existing commit against real root (do not rename shadow into root).
+No delete or rename occurs before step 6 completes.
 
-### 8.4 Honest claims
+### 8.3 Commit linearization and ordering
 
-Never advertise multi-file atomic visibility beyond rollback guarantees.
+The first successful visible rename/delete is the transaction linearization point. Entries are ordered lexicographically by normalized path. After each visible step, journal progress is durably advanced. Adds use no-overwrite primitives where available and fail closed on collisions.
+
+### 8.4 Postcondition verification
+
+After all visible operations, every target is re-read and compared with the plan after-identity. Mismatch enters rollback/recovery; it is never reported as success. Receipt finalization follows successful postcondition verification.
+
+### 8.5 In-process rollback
+
+Rollback restores updates/deletes from immutable objects and removes adds, journaling each step. Success requires exact before identities. Failure returns `ROLLBACK_FAILED`, keeps the journal and artifacts, sets `recovery_required=true`, and exits 6.
+
+### 8.6 Crash recovery
+
+On startup of any mutating command, incomplete journals are detected before planning commit. The command exits with `RECOVERY_REQUIRED` and a precise `agent-patch recover` invocation. Recovery never relies on process IDs or stale lock deletion alone.
+
+### 8.7 Workspace snapshot strategy
+
+Default `tree` mode walks the root once under path policy, default excludes (§4.3.6), and budgets. Reflink/clonefile only when clone writes cannot alter the source. Hard links prohibited. Symlinks copied as symlinks only when lexical and resolved targets remain within root; otherwise verify fails by policy.
+
+### 8.8 Cleanup and garbage collection
+
+Temporary shadows and verifier artifacts are removed on ordinary success unless retention is requested. Transaction artifacts are removed only after journal completion and receipt durability. Object GC is mark-and-sweep over receipts plus incomplete journals, runs only through explicit `gc`, and supports dry-run.
 
 ---
 
@@ -453,11 +687,17 @@ No unicode punctuation normalize in the first fuzzy ship (Codex has it; defer to
 
 ### 9.3 Risk gate
 
-For each accepted chunk, compute match count at `lead/trail` stripped needles; if count > 1 at a more-stripped level while exact was unique, emit risk. Policy: `off|warn|refuse`.
+For each accepted chunk, retain complete `MatchEvidence`: attempted levels, context retained, candidates at each level, anchor/EOF behavior, and nearby twins. `off|warn|refuse` is a deterministic pure mapping over this record. Risk may refuse weak evidence but may never use similarity to select among candidates.
 
 ### 9.4 Idempotent detection
 
-Per update file: if emit equals current base → today's `PATCH_NO_EFFECT`. Under `--idempotent`, if old-side cannot be found but new-side uniquely exists as if already applied, succeed with `already_applied`.
+Without `--idempotent`, emit-equals-base remains `PATCH_NO_EFFECT` (failure). With `--idempotent`, evaluate per hunk, per operation, and for the complete patch:
+
+- Adds already applied only when exact intended bytes and permissions exist;
+- Deletes only when the path is absent;
+- Updates only when the planner proves the exact intended after-state.
+
+A mix of newly applicable and already-applied operations is allowed only when they compose to one unambiguous final state. Incompatible partial replay → `PARTIALLY_APPLIED`.
 
 ### 9.5 Backend rule
 
@@ -469,64 +709,135 @@ Still no `diffy`/`flickzeug` apply on V4A text. `similar` observational / plan d
 
 ### 10.1 Philosophy
 
-Fail closed; prefer repairable diagnostics over silent success.
+Fail closed, preserve evidence, and distinguish semantic rejection from operational damage. Prefer repairable diagnostics over silent success.
 
-### 10.2 New / extended codes
+### 10.2 Error classes
 
-| Code | Exit | When |
+| Code | Exit | Retry guidance |
 | --- | --- | --- |
-| `HASH_PIN_MISMATCH` | 5 | Pin ≠ snapshot |
-| `VERIFY_FAILED` | 1 | Verify command non-zero; tree unchanged |
-| `RISK_REFUSED` | 1 | Risk gate refuse |
-| `RECEIPT_INVALID` | 2 | Bad receipt |
-| `REVERT_STALE` | 5 | Tree ≠ receipt after hashes |
-| `ALREADY_APPLIED` | 0 | Only as success marker field / optional code under idempotent |
+| `HASH_PIN_MISMATCH` | 5 | reread / regenerate |
+| `CONCURRENT_MODIFICATION` | 5 | reread / regenerate; verification is stale |
+| `ROOT_LOCKED` | 5 | retry after owner exits; do not remove journal |
+| `RECOVERY_REQUIRED` | 6 | run `recover` |
+| `VERIFY_FAILED` | 1 | inspect bounded artifacts |
+| `VERIFY_TIMEOUT` | 1 | change timeout / command |
+| `VERIFY_SIGNALLED` | 1 | inspect signal / artifacts |
+| `RISK_REFUSED` | 1 | add context / anchor |
+| `PARTIALLY_APPLIED` | 1 | reread and regenerate complete patch |
+| `RECEIPT_INVALID` | 2 | use valid supported receipt |
+| `RECEIPT_OBJECT_MISSING` | 6 | restore objects / manual intervention |
+| `REVERT_STALE` | 5 | do not overwrite subsequent edits |
+| `SHADOW_LIMIT_EXCEEDED` | 7 | narrow mode or raise explicit limit |
+| `MATCH_WORK_LIMIT` | 7 | add context / split patch |
+| `ROLLBACK_FAILED` | 6 | run `recover`; preserve artifacts |
+| `RECOVERY_AMBIGUOUS` | 6 | manual intervention with evidence |
 
-Exact code set frozen in Phase 0 with [docs/errors.md](docs/errors.md) update.
+`ALREADY_APPLIED` remains a success status field, not an error code. Exact catalog frozen in Phase 0 with [docs/errors.md](docs/errors.md).
 
-### 10.3 Oracle generation
+### 10.3 Retry policy
+
+Semantic, policy, concurrency, verify, and limit failures are never blindly retried. Internal retries are limited to interrupted syscalls where the operation is known not to have crossed a visible mutation boundary. Ambiguous filesystem completion is resolved by rereading postconditions.
+
+### 10.4 Oracle generation
 
 On hunk failure:
 
-1. Collect up to N candidate spans (cap for JSON size).
-2. Excerpts ≤ M lines each.
-3. If a unique match exists under `--fuzzy=strip` but not exact, optionally include a repair patch that adds context/anchor—not an auto apply.
+- at most 8 candidates;
+- at most 20 lines per excerpt;
+- all candidate/excerpt JSON combined ≤64 KiB;
+- repair patch ≤16 KiB;
+- deterministic ordering by path and line;
+- candidates derived exclusively from locator evidence;
+- no source body logged outside explicit diagnostics.
+
+### 10.5 Verifier output handling
+
+Stdout and stderr independently capped. JSON contains bounded tails and paths to retained artifacts. Broken pipes, invalid encoding, timeout, signal, and descendant-kill failure have distinct fields/codes.
+
+### 10.6 Startup health gate
+
+Mutating commands first validate `.agent-patch/` structure, lockability, journal versions, and referenced object availability. Health failure occurs before patch parsing can lead to mutation.
 
 ---
 
-## 11. Performance Targets
+## 11. Performance and Scalability Targets
 
-### 11.1 Baseline workload
+### 11.1 Direct plan/apply workload
 
-- 10 files, ≤50 hunks, ≤2 MiB total file payload.
-- Locate+emit < 50 ms typical on developer hardware (warm).
-- Verify time dominated by user command (not gated).
+Baseline: 10 files, ≤50 hunks, ≤2 MiB affected bytes. Warm-cache targets on developer/CI reference hardware:
 
-### 11.2 Shadow cost
+- parse + snapshot + plan: typically < 50 ms;
+- direct apply excluding durability sync variance: typically < 100 ms;
+- no unrelated root file reads outside path-policy ancestors and `.agent-patch/` health checks.
 
-Shadow materialization of touched files only: < 100 ms for baseline without verify command.
+### 11.2 Matching complexity
 
-### 11.3 Receipt size
+Exact/fuzzy candidate search must be linear or near-linear in file bytes per attempted needle. The planner tracks `match_work_units`; defaults cap total attempted byte comparisons. Pathological repetitive fixtures must terminate under a fixed bound or fail with `MATCH_WORK_LIMIT`.
 
-Default cap: refuse to embed bytes beyond `max_file_bytes`; store hashes + paths always.
+### 11.3 Shadow scalability
 
-### 11.4 Gates
+Default budgets (configurable within hard maxima):
 
-Criterion bench `apply_update` remains; add bench for locate with risk counting.
+```text
+max_shadow_files       200,000
+max_shadow_bytes       20 GiB
+max_shadow_wall_time   120 s
+```
+
+Snapshotter reports discovery/copy/reflink counts and fails before verifier launch when limits are exceeded. Default excludes (§4.3.6) keep typical Rust/JS repos under budget without requiring hard links.
+
+### 11.4 Verify runner defaults
+
+```text
+verify_timeout         10 min
+verify_kill_grace      5 s
+verify_stdout_limit    8 MiB
+verify_stderr_limit    8 MiB
+```
+
+### 11.5 Transaction artifacts
+
+Before-image storage is deduplicated by hash. A patch that cannot be made recoverable within existing total affected-byte limits is rejected before mutation. Journal updates remain O(number of entries), not O(file bytes).
+
+### 11.6 Performance gates
+
+Criterion bench `apply_update` remains; add benches for locate+risk and shadow materialization. CI fails on clear regressions (plan/apply median) and on leaked shadows / surviving verifier children after kill bound.
 
 ---
 
-## 12. Instrumentation Plan
+## 12. Observability and Operational Robustness
 
-### 12.1 Timers
+### 12.1 Invocation correlation
 
-`parse`, `snapshot`, `locate`, `risk`, `emit`, `shadow`, `verify_cmd`, `commit`, `receipt`.
+Every run receives a sortable invocation ID. Mutating runs also receive a transaction ID. Both appear in human diagnostics, JSON, journals, receipts, and artifact paths.
 
-### 12.2 Counters
+### 12.2 Timers
 
-Candidates emitted, fuzzy level used, already_applied count, verify fail count.
+`parse`, `snapshot`, `locate`, `risk`, `emit`, `plan_freeze`, `shadow`, `verify_cmd`, `lock_wait`, `revalidate`, `object_store`, `prepare`, `commit`, `postverify`, `rollback`, `receipt`, `cleanup`, `recover`.
 
-### 12.3 Debug
+### 12.3 Counters
+
+Files/bytes/hunks, match work units, candidates, fuzz levels, risk findings, shadow copied/reflinked bytes, verifier output bytes, descendants killed, object bytes reused/new, journal transitions, unresolved transaction count.
+
+### 12.4 Event log (optional)
+
+With `AGENT_PATCH_EVENT_LOG=1` or `--event-log <PATH>`, emit versioned JSONL metadata records (no patch/file bodies by default). Event-log write failure is a warning before mutation unless configured as required. Optional adapters (e.g. CI annotations) must not change exit semantics.
+
+### 12.5 Health and orchestrator contract
+
+`status --json` and `doctor --json` expose checks with `ok|warn|error`:
+
+- unresolved / incompatible journals;
+- missing / corrupt referenced objects;
+- held lock and owner metadata;
+- stale selected binary;
+- leftover shadows/artifacts past retention;
+- object-store size and GC eligibility;
+- unsupported filesystem semantics.
+
+A health `error` exits non-zero. That is the alerting contract for orchestrators—not a monitoring daemon.
+
+### 12.6 Debug
 
 `AGENT_PATCH_DEBUG=1` traces locate windows (no file bodies by default).
 
@@ -538,10 +849,12 @@ Baseline: [docs/threat-model.md](docs/threat-model.md).
 
 Additions:
 
-1. Verify commands are **user-supplied** and run with the user's privileges—document footguns; no shell interpolation beyond `sh -c` if explicitly chosen (**Phase 0**: argv array vs shell string).
-2. Shadow roots use restrictive temp permissions.
+1. Verify commands are **user-supplied** and run with the user’s privileges. Canonical form is argv after `--`; shell requires explicit `--verify-shell`.
+2. Shadow roots use restrictive temp permissions; hard links forbidden so verifiers cannot mutate the real tree through shared inodes.
 3. Repair patches never execute.
 4. Doctor never downloads or self-updates binaries.
+5. `.agent-patch/` is root-confined tool state; path policy rejects escapes.
+6. Event logs omit source bodies by default.
 
 ---
 
@@ -550,33 +863,51 @@ Additions:
 ### 14.1 Unit
 
 - Fuzzy unique: one/zero/many at each level.
-- Risk gate: unique exact with stripped near-misses.
-- Idempotent already-applied vs `PATCH_NO_EFFECT`.
+- Risk gate: unique exact with stripped near-misses; evidence determinism.
+- Idempotent already-applied vs `PATCH_NO_EFFECT` vs `PARTIALLY_APPLIED`.
 - Hash pin mismatch before locate.
-- Oracle candidate ordering stability.
-- Receipt round-trip inverse.
+- Oracle candidate ordering stability and size caps.
+- Plan digest stability under key reordering attempts.
+- Object store write/verify/GC reference rules.
+- Journal state transitions and recovery decision table.
+- Verify runner timeout, signal, output truncation, process-group reaping.
+- Receipt round-trip inverse (apply → exit process → revert).
 
-### 14.2 Integration
+### 14.2 Property and model-based
 
-- `--plan` zero writes (`CountingFs`).
-- `--verify` success promotes; failure leaves root byte-identical.
-- `--revert` after apply restores blake3.
-- Concurrent modification during verify window.
-- CLI: `doctor` exit codes.
+- Locate→emit→locate idempotence under `--idempotent` for already-applied cases.
+- Model-based commit/recover state machine: every interrupted transition recovers to all-before or all-after.
+- Differential: direct apply bytes == verify-promote bytes when root unchanged.
 
-### 14.3 Fixtures / dogfood
+### 14.3 Filesystem fault-injection / crash E2E
 
-- Extend `fixtures/dogfood` scenarios for verify/oracle/revert.
+Failpoint sweeps across journal/rename/fsync transitions. Killpoint matrix: SIGKILL during prepare, mid-rename, postcondition, receipt finalize. Incomplete journals block new writers until `recover`.
+
+### 14.4 Integration / CLI
+
+- `--plan` / `--check` zero writes (`CountingFs`).
+- `--verify` success promotes; failure/timeout leaves root byte-identical.
+- `--shadow-mode=touched` sets `representative=false`.
+- Concurrent modification during verify window → `CONCURRENT_MODIFICATION`.
+- `doctor` / `status` exit codes; `gc --dry-run`.
+
+### 14.5 Fixtures / dogfood
+
+- Extend `fixtures/dogfood` for verify/oracle/revert/recover.
 - Keep Codex subset green.
 - `scripts/dogfood` covers new gates or a `scripts/dogfood-next` until stable.
 
-### 14.4 Fuzz
+### 14.6 Cross-platform
 
-Existing `parse_patch` / `path_policy` / `apply_update`; add fuzz for fuzzy normalizer not panicking.
+Cover executable bits, clonefile/reflink fallback, directory fsync support, rename semantics, symlink policy, and explicit capability errors when guarantees are unsupported.
 
-### 14.5 Property
+### 14.7 Fuzz
 
-Locate→emit→locate idempotence under `--idempotent` for already-applied cases.
+Existing `parse_patch` / `path_policy` / `apply_update`; add fuzz for fuzzy normalizer and plan encoding round-trips.
+
+### 14.8 Schema
+
+Golden JSON Schema validation for success/error/plan/receipt/journal fixtures; compatibility tests on version bumps.
 
 ---
 
@@ -591,20 +922,31 @@ apply_patch/
 ├── .cursor/skills/agent-patch/
 ├── crates/agent-patch/
 │   ├── src/engine/{locate,emit,matcher,apply,diff_summary}.rs
-│   ├── src/{commit,plan,shadow,receipt,verify,doctor,…}.rs
+│   ├── src/{commit,plan,shadow,receipt,verify,doctor,journal,objects,…}.rs
 │   ├── tests/
 │   ├── tests/fixtures/codex-scenarios/
 │   └── benches/
-├── fixtures/dogfood/               # manual / agent dogfood tree
+├── fixtures/dogfood/
 ├── fuzz/
 ├── scripts/{agent-patch,dogfood,test,lint,bench}
 └── docs/
-    ├── contract-v1.md
+    ├── contract-v1.md              # or contract-v2 when bumped
     ├── protocol.md
     ├── errors.md
     ├── design/
     ├── archive/2026-07-greenfield-implementation-plan.md
     └── research-*.md
+```
+
+On-disk runtime layout (not source):
+
+```text
+<root>/.agent-patch/
+├── lock
+├── objects/
+├── transactions/<txid>/journal.json
+├── receipts/
+└── events/                         # optional
 ```
 
 ---
@@ -615,155 +957,101 @@ apply_patch/
 
 | Agent | Owns | Must not touch |
 | --- | --- | --- |
-| A — Contract/docs | protocol, errors, schemas | engine internals |
-| B — Oracle diagnostics | error JSON, excerpts, repair_patch | commit |
-| C — Fuzzy + risk | matcher/locate policies | FS |
-| D — Plan CLI | `--plan` payload | verify |
-| E — Shadow + verify | shadow FS, verify runner | parser grammar |
-| F — Receipt + revert | receipt serde, inverse plan | fuzzy |
-| G — Doctor + PATH DX | doctor, README/skill | apply semantics |
-| H — Dogfood/CI | fixtures, dogfood script, CI | contract freeze |
+| A — Contract/docs | protocol, errors, schemas, transaction design | engine internals |
+| B — ExecutionPlan + oracle | plan freeze, evidence, error JSON, `--plan` | commit/journal |
+| C — Fuzzy + risk + idempotent | matcher/locate policies | FS mutation |
+| D — Object store + journal + lock | `.agent-patch/` layout, durability | parser grammar |
+| E — Commit/recover | state machine, failpoints | fuzzy |
+| F — Receipt + revert + GC | receipt serde, inverse plan | verify runner |
+| G — Shadow + verify | snapshotter, verify runner, promote | parser grammar |
+| H — Doctor/status/CI | health, dogfood, crash CI | apply semantics |
 
-### 16.2 Freeze first
+### 16.2 Freeze first (Phase 0)
 
-1. Flag matrix and mutual exclusions.
-2. Error code list + JSON extensions.
-3. Receipt schema + size policy.
-4. Shadow strategy A vs B.
-5. Verify command execution model (argv vs shell).
-6. Fuzzy levels shipped in first bump.
-7. Whether JSON `version` stays 1.
+1. JSON / plan / receipt / journal schema version 2 and canonical plan encoding.
+2. Root identity and `.agent-patch/` layout.
+3. Journal states, linearization point, recovery decision table.
+4. Object-store durability and GC reference rules.
+5. Lock semantics and timeout.
+6. Tree-shadow inclusion/exclusion, symlink, and resource policy.
+7. Verify argv, explicit shell, timeout, output, process-group contract.
+8. Idempotence and partial-application truth table.
+9. Match evidence and risk-policy truth table.
+10. Error code and flag compatibility matrix.
 
 ### 16.3 Integration order
 
 ```text
-docs freeze → oracle errors → --plan → fuzzy/risk/idempotent
-  → receipts/revert → shadow/verify → doctor → dogfood/CI
+schemas + recovery design
+  → immutable plan + oracle + --plan
+  → object store + journal + lock
+  → journaled commit + recover
+  → receipts + revert + gc
+  → representative shadow
+  → bounded verify + promote
+  → fuzzy / risk / pins / idempotence
+  → status / doctor / optional events / crash-soak CI
 ```
 
-Optional parallel: `translate` after `--plan` diffs exist.
+Move and `translate` remain outside this plan.
 
 ---
 
 ## 17. Implementation Phases and Acceptance Criteria
 
-### Phase 0 — Contract freeze
+### Phase 0 — Contract and state-machine freeze
 
-Deliver:
+Deliver: schemas, canonical encodings, flag matrix, journal/recovery decision table, shadow exclude policy, verify runner contract, error taxonomy into docs.
 
-- matching/CLI/error/receipt/shadow decisions written into docs;
-- open decisions (§20) closed or explicitly deferred.
+Acceptance: independent agents can implement from fixtures without guessing; schema compatibility tests pass; §20 decisions recorded as frozen.
 
-Acceptance:
+### Phase 1 — Immutable execution plan and oracle evidence
 
-- no ambiguous flag semantics;
-- parallel agents can implement without guessing.
+Deliver: digest-bearing `ExecutionPlan`, `MatchEvidence`, bounded diagnostics, `--plan`, `--check` parity.
 
-### Phase 1 — Oracle diagnostics
+Acceptance: plan digest is deterministic; `--check`/`--plan` make zero mutating calls; diagnostics derive from the same evidence; ambiguous fixture returns ≥2 candidates; no auto-apply of repair.
 
-Deliver:
+### Phase 2 — Object store, journal, and root lock
 
-- candidates + excerpts on hunk failures;
-- optional repair_patch when fuzzy-unique exists;
-- docs + tests.
+Deliver: `.agent-patch/` layout, CAS, journal state transitions, lock, health checks, failpoint hooks.
 
-Acceptance:
+Acceptance: no visible mutation can occur before durable objects and `PREPARED` journal; corrupt/missing artifacts fail closed.
 
-- ambiguous fixture returns ≥2 candidates;
-- JSON size capped;
-- no auto-apply of repair.
+### Phase 3 — Journaled commit and recover
 
-### Phase 2 — `--plan`
+Deliver: commit state machine, rollback, startup recovery gate, `status`, `recover`.
 
-Deliver:
+Acceptance: killpoint sweep proves every interrupted transaction recovers to exact all-before or all-after; unresolved ambiguity remains blocked with evidence.
 
-- structured plan + per-file unified or line diffs via `similar`;
-- zero writes.
+### Phase 4 — Receipts, revert, and GC
 
-Acceptance:
+Deliver: canonical internal receipts, `--receipt` export, inverse plans, recoverable revert, reference-safe dry-run GC.
 
-- parity with `--check` failure modes;
-- CountingFs shows no mutating calls.
+Acceptance: apply → process exit → revert restores exact bytes and modes without Git; stale revert fails before mutation; GC preserves closure.
 
-### Phase 3 — Fuzzy unique + risk + idempotent
+### Phase 5 — Representative workspace shadow
 
-Deliver:
+Deliver: tree snapshot, manifest, reflink/clonefile acceleration, copy fallback, safe symlinks, default excludes, budgets, explicit touched mode.
 
-- `--fuzzy`, `--risk`, `--idempotent`;
-- contract bump;
-- unit + dogfood coverage.
+Acceptance: dirty/untracked/untouched source dependencies are visible under default policy; shadow mutation cannot affect real root; limits fail before verifier launch; `touched` is labeled non-representative.
 
-Acceptance:
+### Phase 6 — Bounded verify runner and promotion
 
-- never first-match;
-- risk refuse blocks commit;
-- idempotent replay exits 0 with `already_applied`.
+Deliver: argv mode, explicit shell mode, timeout, output artifacts, process reaping, verify→promote revalidation.
 
-### Phase 4 — Hash pins
+Acceptance: failing/timeout/signalled verify never mutates root; passing verify bytes equal direct apply; grandchildren do not survive; root drift blocks promotion.
 
-Deliver:
+### Phase 7 — Fuzzy, risk, pins, and idempotence
 
-- parse + validate pins;
-- `HASH_PIN_MISMATCH`.
+Deliver: unique-only fuzz, deterministic risk gate, hash pins, full-state idempotence, partial replay rejection.
 
-Acceptance:
+Acceptance: no first-match path exists; pin failure precedes matching; every idempotent success proves intended final tree.
 
-- pin fail before locate;
-- Codex-style fixtures still pass without pins.
+### Phase 8 — Operational hardening
 
-### Phase 5 — Receipts + revert
+Deliver: `doctor` freshness checks, optional event logs, retention cleanup, crash/soak/performance CI, Linux/macOS capability docs, complete dogfood.
 
-Deliver:
-
-- `--receipt`, `--revert`;
-- bounded storage policy.
-
-Acceptance:
-
-- apply→revert restores blake3 for add/update/delete sets;
-- stale revert fails closed.
-
-### Phase 6 — Shadow verify
-
-Deliver:
-
-- `--verify`;
-- shadow strategy A;
-- cleanup.
-
-Acceptance:
-
-- failing verify leaves root unchanged;
-- passing verify matches direct apply bytes;
-- path escape still rejected.
-
-### Phase 7 — Doctor + DX
-
-Deliver:
-
-- `doctor` subcommand;
-- README/skill/AGENTS updates;
-- stale release detection.
-
-Acceptance:
-
-- doctor fails on obvious stale release when sources newer;
-- documents PATH/direnv/`scripts/agent-patch`.
-
-### Phase 8 — Hardening
-
-Deliver:
-
-- extended dogfood;
-- fuzz/bench updates;
-- optional Move (separate contract) or explicit defer;
-- optional `translate`.
-
-Acceptance:
-
-- CI green Linux/macOS;
-- performance non-regressions on apply bench;
-- research-next-pass updated to current backlog only.
+Acceptance: health errors are machine-actionable; performance gates pass; no leaked processes/shadows/temps; docs describe current behavior in present tense.
 
 ---
 
@@ -778,11 +1066,16 @@ scripts/bench
 cargo +nightly fuzz run parse_patch -- -max_total_time=30
 
 # planned
+cargo test --workspace --features failpoints crash_matrix
+cargo test --workspace verify_process_reaping
 scripts/agent-patch doctor
+scripts/agent-patch status --json
 scripts/agent-patch --plan --json < change.patch
-scripts/agent-patch --verify 'cargo check -q' < change.patch
+scripts/agent-patch --verify -- cargo check -q < change.patch
 scripts/agent-patch --receipt /tmp/r.json < change.patch
 scripts/agent-patch --revert /tmp/r.json
+scripts/agent-patch recover --json
+scripts/agent-patch gc --dry-run --json
 ```
 
 Fixture dogfood:
@@ -805,47 +1098,35 @@ Durable rules for agents implementing this plan:
 4. No nesting heredocs inside `$(...)`.
 5. Rebuild release after engine changes before trusting the wrapper (`doctor` / `cargo build --release`).
 6. Keep docs in current-state voice.
+7. Never bypass an unresolved journal or remove `.agent-patch/lock` / transactions manually.
+8. Never use hard links to build a verification shadow.
+9. Do not report success until after-state verification and receipt durability complete.
+10. Keep verifier commands argv-based unless the user explicitly chooses shell mode.
 
 ---
 
-## 20. Open Decisions to Resolve Before Coding
+## 20. Frozen Decisions
 
-Phase 0 must decide:
-
-1. JSON schema version: stay `1` additive vs bump to `2`.
-2. Shadow strategy A (touched paths only) vs B (worktree/overlay).
-3. Verify execution: argv list vs `sh -c` string; working directory and env vars.
-4. Receipt storage: hashes-only vs bounded base64 bodies; default path.
-5. Fuzzy levels in first bump: `rstrip` only vs `rstrip+strip`.
-6. Risk default: `off` vs `warn`.
-7. Idempotent default: off vs on.
-8. Whether `ALREADY_APPLIED` is a separate exit/code or only a success field.
-9. Hash pin header grammar and multi-hash algorithms (BLAKE3-only recommended).
-10. Whether `--verify` implies receipt auto-write.
-11. Mutual exclusion: `--verify` with `--check` / `--plan`.
-12. Move File: implement in this plan’s Phase 8 or keep deferred.
-13. `translate` in-scope or backlog-only.
-14. Maximum candidates/excerpts bytes in error JSON.
-15. Doctor severity: warn vs non-zero exit on stale release.
-
-Recommended defaults:
-
-```text
-json version              1 additive fields
-shadow                    A (touched paths) + docs for limits
-verify                    argv array; cwd = shadow root
-receipt                   hashes + paths; optional bodies ≤ max_file_bytes
-fuzzy first ship          rstrip + strip; default off
-risk default              warn in human, refuse in --json CI profiles later; ship default off
-idempotent default        off
-already_applied           success field; exit 0
-hash pins                 blake3 only
-verify ≠ check            exclusive
-Move                      deferred (design/move.md)
-translate                 backlog after --plan
-oracle caps               ≤8 candidates; ≤20 lines/excerpt; ≤16KiB repair_patch
-doctor stale release      exit 1 when release older than src and release is what wrapper selects
-```
+1. Public CLI JSON, plan, receipt, and journal schemas use version 2 when these features ship.
+2. Default verify shadow is `tree` (representative under documented excludes); `touched` is explicit and labeled non-representative.
+3. Default shadow excludes: `.agent-patch/`, `.git/`, and common build/cache trees (`target/`, `node_modules/`, `.venv/`, `__pycache__/`, equivalents). Near-complete trees require an explicit include-caches opt-in and must still respect budgets.
+4. Verify executes argv after `--`; shell execution requires `--verify-shell`.
+5. Verify defaults: 10-minute timeout, 5-second kill grace, 8 MiB per output stream.
+6. Receipts reference self-contained immutable before-image objects; hashes-only receipts are rejected as non-recoverable.
+7. `.agent-patch/transactions` journals are durable before visible mutation.
+8. Apply / revert / recover serialize through a root lock and still revalidate exact content.
+9. `ALREADY_APPLIED` is a success status; `PARTIALLY_APPLIED` is exit 1.
+10. Hash pins are BLAKE3-only in the first contract bump.
+11. Fuzzy ships with `rstrip` and `strip`, default off, always unique-only.
+12. Risk default is off for compatibility; CI profiles may explicitly choose refuse.
+13. `--verify` and read-only `--check` / `--plan` are mutually exclusive.
+14. Successful verify does not auto-write a user-named receipt, but every mutation writes an internal canonical receipt.
+15. Oracle caps: 8 candidates, 20 lines each, 64 KiB total candidate payload, 16 KiB repair patch.
+16. Doctor / status return non-zero on unresolved journals, corrupt objects, or unsupported durability guarantees; stale binary is error only when it is the selected executable.
+17. Move and `translate` are backlog-only until this plan’s Definition of Done.
+18. Hard links are forbidden for shadows and transactional storage.
+19. Object GC is explicit, reference-safe, and dry-run capable.
+20. Optional JSONL event logging is an observability adapter, not a correctness dependency.
 
 ---
 
@@ -853,18 +1134,22 @@ doctor stale release      exit 1 when release older than src and release is what
 
 This plan is complete when:
 
-1. Phase 0 decisions are recorded in contract/protocol/errors docs.
-2. Oracle diagnostics ship and are covered by tests.
-3. `--plan` provides structured preview with zero writes.
-4. Unique-only `--fuzzy` and risk/idempotent modes match the bumped contract.
-5. Hash pins fail closed before locate.
-6. Receipts + revert restore content for supported ops.
-7. `--verify` promotes only on command success and never leaves partial real-root mutation on verify failure.
-8. `doctor` detects PATH/direnv/stale-release issues.
-9. Linux and macOS CI pass (`fmt`, `clippy -D warnings`, `test`, `dogfood`).
-10. Fuzz targets remain crash-free for agreed smoke durations.
-11. README, AGENTS, and `.cursor/skills/agent-patch` describe current behavior in present tense.
-12. No silent fuzzy first-match, no whole-file fallback, no `diffy`/`flickzeug` V4A apply path.
-13. `fixtures/dogfood` exercises verify/oracle/revert or documents temporary gaps.
-14. Archived greenfield plan remains historical only; this file is the active plan.
-15. A new agent can: read §3 and §17, implement one phase, and validate with §18 within one working session.
+1. Contract docs and JSON Schemas for plan/receipt/journal are frozen and compatibility-tested.
+2. One canonical `ExecutionPlan` and digest drive plan, verify, commit, receipt, revert, and recovery.
+3. No visible mutation occurs before before-images and `PREPARED` journal are durable.
+4. Killpoint tests recover interrupted transactions to exact all-before or all-after.
+5. Mutating commands refuse to bypass unresolved journals and serialize through the root lock.
+6. Internal receipts are self-contained through verified immutable objects; apply → restart → revert restores exact bytes and modes without Git.
+7. Default verify observes a representative workspace (dirty/untracked sources + untouched dependencies under documented excludes); weaker modes are labeled.
+8. Verify argv, timeout, output bounds, signals, and descendant cleanup are tested; no verifier process survives the kill bound.
+9. Passing verify followed by unchanged-root promotion produces bytes identical to direct apply; root drift fails closed.
+10. Unique-only fuzz, deterministic risk evidence, pins, and full-state idempotence match the bumped contract.
+11. Plan/check remain write-free and parallel-safe.
+12. `status` / `doctor`, journals, receipts, and artifacts provide enough evidence for an orchestrator to identify recovery-required and degraded states.
+13. Linux and macOS CI pass formatting, lint, unit, property, integration, E2E, crash, process-leak, schema, dogfood, and agreed performance gates.
+14. Resource budgets cover patch/file counts, match work, shadow files/bytes/time, verify time/output, diagnostics, objects, and artifacts.
+15. No silent first-match, whole-file fallback, shell insertion, hard-link shadow, hashes-only revert, or unresolved-journal bypass exists.
+16. Move and `translate` remain out of scope until this Definition of Done is met.
+17. README, AGENTS, skill docs, protocol, error catalog, recovery notes, and threat model describe shipped behavior in present tense.
+18. A new agent can implement any phase from its schemas, invariants, acceptance tests, and verification commands without inventing semantics.
+19. Archived greenfield plan remains historical only; this file is the active plan.
